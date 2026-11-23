@@ -56,7 +56,10 @@ def studio_albums(groups):
 
 
 BUSY_MAX = 3
-WD_ALBUMS_BATCH = 100
+WD_ALBUMS_BATCH = 50
+DC_PAGES_MAX = 2            # Discogs is trusted only for an artist this small: past it,
+                            # its "main" entries are mostly singles it doesn't tell apart
+MB_GAP = 1.1
 STUDIO_ALBUM = "Q208569"
 FROM_DISCOGS_NOT = re.compile(r"\b(live|greatest|best of|hits|collection|anthology|essential|remix(es)?|"
                               r"demos?|sessions|b-sides|rarities|singles|ep|soundtrack|tour)\b", re.I)
@@ -81,12 +84,33 @@ def _save_disc(a, albums, source):
     return albums
 
 
+_mb_last = [0.0]
+
+
+def mb_once(session, url, params):
+    """One MusicBrainz request, a second apart, not retried: a busy answer is
+    None at once, so a busy MusicBrainz costs seconds, not minutes."""
+    wait = _mb_last[0] + MB_GAP - time.time()
+    if wait > 0:
+        time.sleep(wait)
+    _mb_last[0] = time.time()
+    try:
+        r = session.get(url, params=params, headers={"User-Agent": ids.UA, "Accept": "application/json"},
+                        timeout=30)
+    except ab.NET_ERRORS:
+        return None
+    return r.json() if r.status_code == 200 else None
+
+
 def mb_albums(mbid, site):
-    """The studio albums MusicBrainz has for an artist, or None if it didn't answer."""
+    """The studio albums MusicBrainz has for an artist, or None if it didn't
+    answer. `site` is a requests session (one try a request) or an ids.Site."""
     groups, offset = [], 0
+    get = site.get if isinstance(site, ids.Site) else \
+        (lambda url, params: mb_once(site, url, params))
     while True:
-        data = site.get(f"{ids.MB}release-group", {"artist": mbid, "type": "album", "limit": 100,
-                                                    "offset": offset, "fmt": "json"})
+        data = get(f"{ids.MB}release-group", {"artist": mbid, "type": "album", "limit": 100,
+                                               "offset": offset, "fmt": "json"})
         if data is None:
             return None
         page = data.get("release-groups") or []
@@ -106,11 +130,14 @@ def wd_albums(qids, session):
             continue
         query = ("SELECT ?artist ?album ?albumLabel ?date ?rg WHERE { "
                  f"VALUES ?artist {{ {' '.join('wd:' + q for q in batch)} }} "
-                 f"?album wdt:P175 ?artist ; wdt:P31 wd:{STUDIO_ALBUM} . "
+                 f"?album wdt:P175 ?artist . {{ ?album wdt:P31 wd:{STUDIO_ALBUM} }} "
+                 f"UNION {{ ?album wdt:P7937 wd:{STUDIO_ALBUM} }} "
                  "OPTIONAL { ?album wdt:P577 ?date } OPTIONAL { ?album wdt:P436 ?rg } "
                  'SERVICE wikibase:label { bd:serviceParam wikibase:language "en,mul". } }')
         r = sparql(session, query)
         if r is None or not r.ok:
+            show.warn(f"Wikidata didn't answer for {len(batch)} artists "
+                      f"({getattr(r, 'status_code', 'no answer')}): asking MusicBrainz and Discogs instead")
             for q in batch:
                 out[q] = None
             continue
@@ -132,10 +159,13 @@ def wd_albums(qids, session):
     return out
 
 
-def dc_albums(dcid, site):
+def dc_albums(dcid, site, note=lambda s: None):
     """The artist's own albums on Discogs, as well as they can be told from
     the rest: their main masters, less anything whose title says live,
-    best-of, soundtrack and so on. None if Discogs didn't answer."""
+    best-of, soundtrack and so on. Discogs doesn't mark singles, so for an
+    artist with more than DC_PAGES_MAX pages, whose main entries are mostly
+    singles, it's [] (no list: the page shows the albums you own). None if
+    Discogs didn't answer."""
     out, page = [], 1
     while True:
         data = site.get(f"{ids.DISCOGS}artists/{dcid}/releases",
@@ -147,15 +177,18 @@ def dc_albums(dcid, site):
                 continue
             out.append({"id": f"dc:{r['id']}", "title": r.get("title") or "", "year": str(r.get("year") or "")})
         pages = (data.get("pagination") or {}).get("pages") or 1
+        if pages > DC_PAGES_MAX:
+            return []
         if page >= pages:
             return out
         page += 1
+        note(f"page {page} of {pages}")
 
 
 def discographies(artists, session=None, mb=None, dc=None, refresh_days=180, say=show.info):
     """{album artist: [{id, title, year}]} for {album artist: {mbid, qid, dcid}}.
     With no sites, only what was saved."""
-    out, due = {}, {}
+    out, due, guessed = {}, {}, set()
     for tag, a in artists.items():
         key = _disc_key(a)
         if not key:
@@ -163,7 +196,11 @@ def discographies(artists, session=None, mb=None, dc=None, refresh_days=180, say
         saved = ab.load_json(_disc_path(key))
         if saved:
             out[tag] = saved.get("albums")
-        if session is not None and not (saved and _age_days(saved) < refresh_days):
+        fresh = saved and _age_days(saved) < refresh_days
+        if session is not None and fresh and saved.get("source") == "discogs":
+            guessed.add(tag)                    # Discogs' list was a guess: Wikidata may have better
+            due[tag] = dict(a)
+        elif session is not None and not fresh:
             due[tag] = dict(a)
     say(f"{len(out)} already saved, {len(due)} to look up")
     if not due:
@@ -181,7 +218,7 @@ def discographies(artists, session=None, mb=None, dc=None, refresh_days=180, say
         albums = wd.get(a.get("qid"))
         if albums:
             out[tag] = _save_disc(a, albums, "wikidata")
-        else:
+        elif tag not in guessed:                # a Discogs list still fresh is kept as it is
             rest.append(tag)
     say(f"Wikidata had {len(due) - len(rest)}; MusicBrainz and Discogs for {len(rest)}")
     busy = 0
@@ -190,7 +227,7 @@ def discographies(artists, session=None, mb=None, dc=None, refresh_days=180, say
         bar.update(note=tag)
         a, albums = due[tag], None
         if mb is not None and a.get("mbid") and busy < BUSY_MAX:
-            albums = mb_albums(a["mbid"], mb)
+            albums = mb_albums(a["mbid"], session)
             busy = busy + 1 if albums is None else 0
             if busy == BUSY_MAX:
                 show.warn("MusicBrainz isn't answering: the rest go to Discogs this run")
@@ -198,7 +235,7 @@ def discographies(artists, session=None, mb=None, dc=None, refresh_days=180, say
                 out[tag] = _save_disc(a, albums, "musicbrainz")
                 continue
         if dc is not None and a.get("dcid"):
-            got = dc_albums(a["dcid"], dc)
+            got = dc_albums(a["dcid"], dc, note=lambda s, t=tag: bar.update(0, f"{t}, Discogs {s}"))
             if got is not None:
                 albums = got
                 out[tag] = _save_disc(a, albums, "discogs")

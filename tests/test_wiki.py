@@ -226,48 +226,77 @@ class Ids(unittest.TestCase):
 
 
 class StudioAlbums(unittest.TestCase):
-    """The ladder: Wikidata for all in one query, MusicBrainz for the rest
-    until it stops answering, Discogs last. Sites faked."""
-    def test_ladder(self):
+    """The ladder: Wikidata for all, MusicBrainz for the rest until it stops
+    answering, Discogs last. Sites faked."""
+    WD = {"results": {"bindings": [
+        {"artist": {"value": "http://www.wikidata.org/entity/Q10"},
+         "album": {"value": "http://www.wikidata.org/entity/Q11"}, "albumLabel": {"value": "First"},
+         "date": {"value": "1999-05-01T00:00:00Z"}, "rg": {"value": "rg-first"}},
+        {"artist": {"value": "http://www.wikidata.org/entity/Q10"},
+         "album": {"value": "http://www.wikidata.org/entity/Q11"}, "albumLabel": {"value": "First"},
+         "date": {"value": "1998-01-01T00:00:00Z"}},
+        {"artist": {"value": "http://www.wikidata.org/entity/Q10"},
+         "album": {"value": "http://www.wikidata.org/entity/Q12"}, "albumLabel": {"value": "Q12"}}]}}
+
+    class DC:
+        def __init__(self, pages=2):
+            self.pages, self.total = [], pages
+
+        def get(self, url, params=None):
+            self.pages.append(params["page"])
+            return {"pagination": {"pages": self.total}, "releases": [
+                {"type": "master", "role": "Main", "id": params["page"], "title": f"Debut {params['page']}",
+                 "year": 2000 + params["page"]},
+                {"type": "master", "role": "Main", "id": 99, "title": "Live at Leeds", "year": 2003},
+                {"type": "master", "role": "Appearance", "id": 3, "title": "Guesting", "year": 2004},
+                {"type": "release", "role": "Main", "id": 4, "title": "Promo", "year": 2005}]}
+
+    def ask(self, artists, dc, queries):
         from unittest import mock
         from wiki import lookups
-        wd = {"results": {"bindings": [
-            {"artist": {"value": "http://www.wikidata.org/entity/Q10"},
-             "album": {"value": "http://www.wikidata.org/entity/Q11"}, "albumLabel": {"value": "First"},
-             "date": {"value": "1999-05-01T00:00:00Z"}, "rg": {"value": "rg-first"}},
-            {"artist": {"value": "http://www.wikidata.org/entity/Q10"},
-             "album": {"value": "http://www.wikidata.org/entity/Q11"}, "albumLabel": {"value": "First"},
-             "date": {"value": "1998-01-01T00:00:00Z"}},
-            {"artist": {"value": "http://www.wikidata.org/entity/Q10"},
-             "album": {"value": "http://www.wikidata.org/entity/Q12"}, "albumLabel": {"value": "Q12"}}]}}
         mb_calls = []
 
-        class MB:
-            def get(self, url, params=None):
-                mb_calls.append(params["artist"])
-                return None                                # busy every time
+        def sparql(session, query):
+            queries.append(query)
+            return mock.Mock(ok=True, json=lambda: self.WD)
+        with mock.patch.object(lookups, "sparql", side_effect=sparql), \
+                mock.patch.object(lookups, "wikidata_by_mbid", return_value={}), \
+                mock.patch.object(lookups, "mb_once", side_effect=lambda s, u, p: mb_calls.append(p["artist"])):
+            got = lookups.discographies(artists, session=object(), mb=True, dc=dc, say=lambda s: None)
+        return got, mb_calls
 
-        class DC:
-            def get(self, url, params=None):
-                return {"pagination": {"pages": 1}, "releases": [
-                    {"type": "master", "role": "Main", "id": 1, "title": "Debut", "year": 2001},
-                    {"type": "master", "role": "Main", "id": 2, "title": "Live at Leeds", "year": 2003},
-                    {"type": "master", "role": "Appearance", "id": 3, "title": "Guesting", "year": 2004},
-                    {"type": "release", "role": "Main", "id": 4, "title": "Promo", "year": 2005}]}
-
+    def test_ladder(self):
+        from wiki import lookups
+        dc, queries = self.DC(), []
         artists = {"A": {"qid": "Q10"}, "B": {"mbid": "b1", "dcid": 7}, "C": {"mbid": "c1"},
                    "D": {"mbid": "d1"}, "E": {"mbid": "e1", "dcid": 9}}
-        with mock.patch.object(lookups, "sparql", return_value=mock.Mock(ok=True, json=lambda: wd)), \
-                mock.patch.object(lookups, "wikidata_by_mbid", return_value={}):
-            got = lookups.discographies(artists, session=object(), mb=MB(), dc=DC(), say=lambda s: None)
+        got, mb_calls = self.ask(artists, dc, queries)
+        self.assertIn("wdt:P7937 wd:Q208569", queries[0])       # albums described either way
+        self.assertIn("wdt:P31 wd:Q208569", queries[0])
         self.assertEqual(got["A"], [{"id": "rg-first", "title": "First", "year": "1998"}])
         self.assertEqual(mb_calls, ["b1", "c1", "d1"])          # stops after three busy answers
-        self.assertEqual([a["title"] for a in got["B"]], ["Debut"])   # Discogs, filtered
-        self.assertEqual([a["title"] for a in got["E"]], ["Debut"])   # Discogs without asking MusicBrainz
+        self.assertEqual([a["title"] for a in got["B"]], ["Debut 1", "Debut 2"])
+        self.assertEqual(dc.pages[:3], [1, 2, 1])
         self.assertNotIn("C", got)                               # no answer anywhere: asked again next run
         again = lookups.discographies(artists)                  # saved: no sites, same answers
         self.assertEqual(again["A"], got["A"])
         self.assertEqual(again["B"], got["B"])
+
+        # next run: Discogs' guesses are asked of Wikidata again, and kept if it has nothing
+        dc2, queries2 = self.DC(), []
+        got2, mb2 = self.ask({"B": {"mbid": "b1", "dcid": 7, "qid": "Q20"}}, dc2, queries2)
+        self.assertEqual(len(queries2), 1)
+        self.assertEqual(mb2, [])
+        self.assertEqual(dc2.pages, [])
+        self.assertEqual(got2["B"], got["B"])
+
+    def test_big_discogs_artist_gets_no_list(self):
+        """Past two pages Discogs' main entries are mostly singles: no list,
+        and only one page read."""
+        dc = self.DC(pages=110)
+        got, _ = self.ask({"F": {"dcid": 10263}}, dc, [])
+        self.assertEqual(got["F"], [])
+        self.assertEqual(dc.pages, [1])
 
 
 class Keys(unittest.TestCase):
