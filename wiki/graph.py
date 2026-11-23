@@ -151,20 +151,27 @@ def build(lib, records, mb=None, dc=None, progress=print):
     return g
 
 
+def ids_of(g):
+    """{root: {"mb": [...], "dc": [...]}}: every MusicBrainz and Discogs ID of
+    each person, worked out once from the who's-who table and kept."""
+    if getattr(g, "_ids", None) is None:
+        g._ids = {}
+        for x in list(g.same.up):
+            if x[0] in ("mb", "dc"):
+                g._ids.setdefault(g.same.find(x), {"mb": [], "dc": []})[x[0]].append(x[1])
+    return g._ids
+
+
 def mb_id(g, root):
     """A MusicBrainz ID for the person, if any of their entries has one."""
     if root[0] == "mb":
         return root[1]
-    for x, up in g.same.up.items():
-        if x[0] == "mb" and g.same.find(x) == root:
-            return x[1]
-    return None
+    found = (ids_of(g).get(root) or {}).get("mb")
+    return found[0] if found else None
 
 
 def dc_id(g, root):
     if root[0] == "dc":
         return root[1]
-    for x in g.same.up:
-        if x[0] == "dc" and g.same.find(x) == root:
-            return x[1]
-    return None
+    found = (ids_of(g).get(root) or {}).get("dc")
+    return found[0] if found else None

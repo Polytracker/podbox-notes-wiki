@@ -201,6 +201,30 @@ class Batched(unittest.TestCase):
         self.assertEqual(again["A"]["bio_source"], "wikipedia")
 
 
+class Ids(unittest.TestCase):
+    def test_same_answers_as_reading_the_whole_table(self):
+        """ids_of() gives each person the IDs a walk of the whole table did."""
+        import credits as cr
+        from wiki import graph
+        g = graph.Graph()
+        g.same = cr.Same()
+        g.same.join(("mb", "m1"), ("dc", 5))
+        g.same.join(("mb", "m2"), ("dc", 7))
+        g.same.join(("dc", 7), ("mb", "m3"))
+        g.same.find(("mb", "m4"))
+        g.same.find(("tag", "someone"))
+
+        def walk(root, kind):
+            if root[0] == kind:
+                return root[1]
+            return next((x[1] for x in list(g.same.up) if x[0] == kind and g.same.find(x) == root), None)
+
+        for x in list(g.same.up):
+            r = g.same.find(x)
+            self.assertEqual(graph.mb_id(g, r), walk(r, "mb"), r)
+            self.assertEqual(graph.dc_id(g, r), walk(r, "dc"), r)
+
+
 class Writing(unittest.TestCase):
     def test_own_edits_kept(self):
         f = NOTES / "People/Joni Mitchell.md"

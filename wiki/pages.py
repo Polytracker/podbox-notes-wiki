@@ -16,6 +16,7 @@ from collections import defaultdict
 
 from . import md
 from . import ab
+from . import graph
 import credits as cr
 import ids
 import translate as tr
@@ -368,10 +369,7 @@ def member_lines(lib, tag):
     """A band's members from MusicBrainz, with instrument and years, one a line."""
     out = []
     for root in lib.roots_of_tag.get(tag, ()):
-        if root[0] != "mb":
-            mbs = [x[1] for x in lib.g.same.up if x[0] == "mb" and lib.g.same.find(x) == root]
-        else:
-            mbs = [root[1]]
+        mbs = [root[1]] if root[0] == "mb" else (graph.ids_of(lib.g).get(root) or {}).get("mb", [])
         for mb in mbs:
             seen = {}
             for r in lib.g.member_rels.get(mb, []):
