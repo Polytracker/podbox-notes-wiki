@@ -162,6 +162,45 @@ class Splitting(unittest.TestCase):
         self.assertEqual([a["title"] for a in got], ["First", "Second"])
 
 
+class Batched(unittest.TestCase):
+    """Key people looked up many at a time: Wikidata by MusicBrainz ID, then
+    Wikipedia's openings, then Last.fm only for the rest. Sites faked."""
+    def test_people(self):
+        import argparse
+        from unittest import mock
+        from wiki import lookups
+        a, b, c = ("1" * 8 + "-1111-1111-1111-" + "1" * 12, "2" * 8 + "-2222-2222-2222-" + "2" * 12,
+                   "3" * 8 + "-3333-3333-3333-" + "3" * 12)
+        sparql = {"results": {"bindings": [
+            {"mbid": {"value": a}, "item": {"value": "http://www.wikidata.org/entity/Q1"},
+             "article": {"value": "https://en.wikipedia.org/wiki/Ann_Smith"},
+             "image": {"value": "http://commons.wikimedia.org/wiki/Special:FilePath/Ann.jpg"},
+             "born": {"value": "1950-03-01T00:00:00Z"}, "human": {"value": "true"}},
+            {"mbid": {"value": b}, "item": {"value": "http://www.wikidata.org/entity/Q2"},
+             "human": {"value": "true"}}]}}
+        reply = mock.Mock(ok=True, status_code=200, json=lambda: sparql)
+        asked = []
+        with mock.patch.object(lookups, "sparql", return_value=reply), \
+                mock.patch.object(lookups.ln, "wiki_summaries",
+                                  side_effect=lambda t, s: asked.append(t) or {"Ann Smith": "Ann Smith is an engineer."}), \
+                mock.patch.object(lookups.ab, "lastfm_bio",
+                                  side_effect=lambda n, s, k, m: "Bob plays bass. He is from Leeds. He tours." if m == b else None):
+            got = lookups.people([("A", "Ann Smith", a, None), ("B", "Bob Jones", b, None), ("C", "Cy", c, None)],
+                                 None, argparse.Namespace(lastfm_key="k", discogs_token=None))
+        self.assertEqual(asked, [["Ann Smith"]])                 # one Wikipedia request for the batch
+        self.assertEqual(got["A"]["bio_source"], "wikipedia")
+        self.assertEqual(got["A"]["subtitle"], "b. 1950")
+        self.assertTrue(got["A"]["image"].endswith("Ann.jpg"))
+        self.assertEqual(got["B"]["bio_source"], "lastfm")
+        self.assertTrue(lookups.enough_bio(got["B"]))
+        self.assertFalse(lookups.enough_bio(got["C"]))
+        # saved: a second run asks nothing
+        with mock.patch.object(lookups, "sparql", side_effect=AssertionError("asked again")):
+            again = lookups.people([("A", "Ann Smith", a, None)], None,
+                                   argparse.Namespace(lastfm_key="k", discogs_token=None))
+        self.assertEqual(again["A"]["bio_source"], "wikipedia")
+
+
 class Writing(unittest.TestCase):
     def test_own_edits_kept(self):
         f = NOTES / "People/Joni Mitchell.md"

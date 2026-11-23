@@ -27,17 +27,15 @@ Usage:
 import argparse
 import os
 import sys
-import time
 from pathlib import Path
 
 import wiki                                    # noqa: F401  (liner/ on the path, settings file)
-from wiki import ab, graph, lookups, md, pages, people
+from wiki import ab, graph, lookups, pages, people
 from wiki.write import Writer, banner
 import credits as cr
 import ids
 import liner_notes as ln
 import track_notes as tn
-import translate as tr
 
 STAGING = lookups.CACHE / "liner files"        # where the copied scripts' own files go
 
@@ -131,29 +129,14 @@ def main(argv=None):
     # -- key people: a page if key on two albums or more, or if a bio is found
     per_album, keyed, _ = people.key_people(g, lib)
     lib_roots = people.library_artist_roots(g, lib)
-    candidates = [r for r in keyed if r not in lib_roots]
-    found = {}
+    candidates = [r for r in sorted(keyed, key=str) if r not in lib_roots]
     session = __import__("requests").Session()
-    look = argparse.Namespace(lastfm_key=key,
-                              discogs_token=token, long_bio=ab.LONG_BIO, no_banners=args.no_banners,
-                              translator=tr.Translator(conf.get("deepl key"), ab.CACHE.parent / "translations.json",
-                                                       session))
+    look = argparse.Namespace(lastfm_key=key, discogs_token=token)
     print(f"\n== Key people: {len(candidates)}")
-    for n, r in enumerate(sorted(candidates, key=str), 1):
-        mbid, dcid = graph.mb_id(g, r), graph.dc_id(g, r)
-        if not (mbid or dcid):
-            continue
-        if online:
-            try:
-                found[r] = lookups.person(g.name.get(r, ""), mbid, dcid, session, look)
-            except Exception as e:
-                ab.problem(g.name.get(r, ""), e)
-                found[r] = lookups.saved_person(mbid, dcid)
-        else:
-            found[r] = lookups.saved_person(mbid, dcid)
-        print(f"\r  {n}/{len(candidates)}", end="", flush=True)
-    print()
-    w = people.assign(g, lib, has_bio=lambda r: lookups.enough_bio((found.get(r) or (None,))[0]))
+    wanted = [(r, g.name.get(r, ""), graph.mb_id(g, r), graph.dc_id(g, r)) for r in candidates]
+    wanted = [x for x in wanted if x[2] or x[3]]
+    found = lookups.people(wanted, session, look, online=online)
+    w = people.assign(g, lib, has_bio=lambda r: lookups.enough_bio(found.get(r)))
 
     # -- what the pages are written from
     notes, tracks, bios, photos, discs = {}, {}, {}, {}, {}
@@ -170,7 +153,7 @@ def main(argv=None):
         if mbid:
             discs[tag] = lookups.discography(mbid, mb)
     folders = ab.load_json(ln.FOLDERS) or {}
-    person_meta = {r: f[0] for r, f in found.items() if f and f[0]}
+    person_meta = {r: m for r, m in found.items() if m}
     L = pages.Library(lib, records, g, w, notes, tracks, bios, person_meta, discs, folders)
     every = pages.all_pages(L)
 
@@ -198,8 +181,9 @@ def main(argv=None):
             if jpg and jpg.exists():
                 pic = jpg.read_bytes()
                 centre = (bios.get(p.subject) or {}).get("photo_source") == "album cover"
-        elif p.kind == "person":
-            jpg = (found.get(p.subject) or (None, None))[1]
+        elif p.kind == "person" and person_meta.get(p.subject):
+            jpg = lookups.photo(person_meta[p.subject], session) if online else \
+                lookups.saved_person(graph.mb_id(g, p.subject), graph.dc_id(g, p.subject))[1]
             if jpg and Path(jpg).exists():
                 pic = Path(jpg).read_bytes()
         if pic:
