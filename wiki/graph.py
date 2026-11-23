@@ -112,6 +112,12 @@ def build(lib, records, mb=None, dc=None, progress=print):
             for m in links_to.get(d[1], ()):
                 if ("mb", m) in ps:
                     same.join(("mb", m), d)
+    names_seen = defaultdict(set)              # a site's name, and as credited on each album
+    for k, c in shown:
+        for n in {c[1], c[2]}:
+            if n:
+                names_seen[cr.fold(n)].add(c[0])
+    join_by_artist(same, names_seen, albums_of, lib)
 
     # -- where each person appears
     g.appear = defaultdict(lambda: defaultdict(set))
@@ -160,6 +166,29 @@ def ids_of(g):
             if x[0] in ("mb", "dc"):
                 g._ids.setdefault(g.same.find(x), {"mb": [], "dc": []})[x[0]].append(x[1])
     return g._ids
+
+
+def join_by_artist(same, by_name, albums_of, lib):
+    """One name (a site's own, or as an album credits them: Discogs' "Phil
+    Selway" is credited "Philip Selway"), one MusicBrainz entry and one
+    Discogs entry still apart, both credited on albums by the same album
+    artist: one person. An album's
+    credits come from one site or the other, so a band member is often
+    MusicBrainz's on one album and Discogs' on the next, and the two sites
+    don't always link their entries. Two entries on the same site stay two
+    people, as that site says they are."""
+    for ps in by_name.values():
+        mbs = {same.find(p) for p in ps if p[0] == "mb"}
+        dcs = [p for p in ps if p[0] == "dc" and same.find(p) not in mbs]
+        if not mbs or not dcs:
+            continue
+        def artists(roots):
+            return {lib[k]["artist"] for p in ps if same.find(p) in roots for k in albums_of[p]}
+        for d in dcs:
+            theirs = artists({same.find(d)})
+            match = [m for m in mbs if artists({m}) & theirs]
+            if len(match) == 1:
+                same.join(match[0], d)
 
 
 def mb_id(g, root):

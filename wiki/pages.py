@@ -89,13 +89,25 @@ class Library:
         for root, place in w.root_page.items():
             names.setdefault(g.name.get(root, ""), place)
         self.linker = Linker(names)
+        places = defaultdict(set)
+        for n, place in names.items():
+            places[cr.fold(n)].add(place)
+        for r, place in w.root_page.items():
+            places[cr.fold(g.name.get(r, ""))].add(place)
+        self.by_name = {n: next(iter(ps)) for n, ps in places.items() if len(ps) == 1}
         self.tag_of_root = w.lib_root
+        self.canon = getattr(w, "canon", None) or {t: t for t in w.artist_page}
         self.roots_of_tag = defaultdict(set)
         for r, t in w.lib_root.items():
-            self.roots_of_tag[t].add(r)
+            self.roots_of_tag[self.canon.get(t, t)].add(r)
         self.by_artist = defaultdict(list)
         for k in sorted(lib, key=lambda k: (self.year(k) or "9999", cr.fold(lib[k]["album"]))):
-            self.by_artist[lib[k]["artist"]].append(k)
+            self.by_artist[self.canon.get(lib[k]["artist"], lib[k]["artist"])].append(k)
+        for tag, c in self.canon.items():        # a spelling's bio or list serves them all
+            if not self.bios.get(c) and self.bios.get(tag):
+                self.bios[c] = self.bios[tag]
+            if not self.discs.get(c) and self.discs.get(tag):
+                self.discs[c] = self.discs[tag]
 
     def album_place(self, k):
         return md.album_place(self.lib[k]["artist"], self.lib[k]["album"])
@@ -103,9 +115,8 @@ class Library:
     def person(self, root, name):
         """A person's name, linked when they have a page."""
         place = self.w.root_page.get(root)
-        if not place and root[0] == "tag":
-            place = self.w.artist_page.get(next((t for t in self.w.artist_page
-                                                 if cr.fold(t) == cr.fold(name)), None))
+        if not place and root[0] == "tag":       # credited by the files' tags: no ID, so by name,
+            place = self.by_name.get(cr.fold(name))      # when only one page has it
         return md.link(name, place) if place else md.text(name)
 
     def year(self, k):
@@ -289,6 +300,8 @@ def credits_page(lib, k, people):
         p.lines += ["", f"## {group}", ""]
         for pid, name, texts in cr.people_rows(chosen[group][1], a):
             root = lib.g.same.find(pid)
+            if root in lib.g.insiders.get(k, ()):
+                texts = whole_album(texts)
             p.lines.append(" ".join(x for x in (lib.person(root, name), md.dim(md.text(cr.roles_text(texts)))) if x))
     p.lines += ["", md.note(md.text(cr.sources_line(chosen)))]
     return p
@@ -345,9 +358,27 @@ def tracks_pages(lib, k):
 
 
 # ---------------------------------------------------------------- people
+TRACKS = re.compile(r"\s*\[[^\]]*\]$")
+
+
+def whole_album(texts):
+    """people_rows()'s role texts without their track numbers, each role once.
+    For the album's own artist and band members: sites often credit their
+    playing on a few tracks only, which reads as if they sat the rest out."""
+    out = []
+    for t in texts:
+        for r in TRACKS.sub("", t).split(", "):
+            if r and r not in out:
+                out.append(r)
+    return [", ".join(out)] if out else []
+
+
 def roles_on(lib, root, k):
-    """A person's roles on an album, with tracks when it isn't the whole album."""
+    """A person's roles on an album, with tracks when it isn't the whole album,
+    and never for the album's own artist and band."""
     how = lib.g.appear.get(root, {}).get(k) or set()
+    if root in lib.g.insiders.get(k, ()):
+        how = {(r, None) for r, _ in how}
     every = set(range(len(lib.lib[k]["tracks"])))
     on = {}
     for role, tracks in how:
@@ -426,7 +457,7 @@ def artist_page(lib, tag):
         p.lines += [album_line(lib, k) for k in rest] + [""]
     roots = lib.roots_of_tag.get(tag, set())
     guest = sorted({k for r in roots for k in lib.g.appear.get(r, {})
-                    if k in lib.lib and lib.lib[k]["artist"] != tag},
+                    if k in lib.lib and lib.canon.get(lib.lib[k]["artist"]) != tag},
                    key=lambda k: (lib.year(k) or "9999", cr.fold(lib.title(k))))
     if guest:
         p.lines += ["## Also Appears On", ""]
@@ -513,7 +544,7 @@ def all_pages(lib):
         for t in tracks_pages(lib, k):
             t.title = f"{lib.title(k)} - {t.place.rsplit(' - ', 1)[-1]}"
             pages.append(t)
-    for tag in sorted(lib.w.artist_page):
+    for tag in sorted(set(lib.canon.values())):
         a = artist_page(lib, tag)
         a.title = tag
         pages.append(a)

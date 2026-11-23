@@ -70,6 +70,13 @@ class Pages(unittest.TestCase):
         self.assertIn("[3 people appear elsewhere in your library](<Albums/Steely Dan - Aja - Other Appearances>)", p)
         self.assertIn("[Steve Gadd](<People/Steve Gadd>) *Drums \\[2, 5\\]*", p)
 
+    def test_band_plays_the_whole_album(self):
+        """Walter Becker is credited on one track of Aja, but he's in the band:
+        no track numbers. Steve Gadd, a guest, keeps his."""
+        p = page("Albums/Steely Dan - Aja - Credits")
+        self.assertIn("Walter Becker *Bass*", p)
+        self.assertIn("*Drums \\[2, 5\\]*", p)
+
     def test_other_appearances(self):
         p = page("Albums/Steely Dan - Aja - Other Appearances")
         self.assertIn("**[Steve Gadd](<People/Steve Gadd>)** *Drums*", p)
@@ -310,6 +317,63 @@ class Keys(unittest.TestCase):
             self.assertEqual(conf.get("ipod drive"), "G:")       # the settings file still read
         finally:
             wiki.KEYS.unlink()
+
+
+class OnePerson(unittest.TestCase):
+    def test_two_sites_one_band(self):
+        """A MusicBrainz and a Discogs entry of one name, both on albums by the
+        same artist, are one person; on different artists' albums, two."""
+        import credits as cr
+        from wiki import graph
+        lib = {"R - A": {"artist": "R"}, "R - B": {"artist": "R"}, "X - C": {"artist": "X"}}
+        same = cr.Same()
+        m, d, d2 = ("mb", "m-selway"), ("dc", 365781), ("dc", 99)
+        by_name = {"philip selway": {m, d}, "john smith": {("mb", "m-js"), d2}}
+        albums_of = {m: {"R - A"}, d: {"R - B"}, ("mb", "m-js"): {"R - A"}, d2: {"X - C"}}
+        graph.join_by_artist(same, by_name, albums_of, lib)
+        self.assertEqual(same.find(m), same.find(d))
+        self.assertNotEqual(same.find(("mb", "m-js")), same.find(d2))
+
+
+class SamePersonAsArtist(unittest.TestCase):
+    def test_key_person_named_as_library_artist(self):
+        """Credited on an album their name is in: the artist's own page. A
+        credit from the files' tags, with no ID, isn't a second person."""
+        import credits as cr
+        from wiki import people
+        from wiki.graph import Graph
+        g = Graph()
+        hend, tagged, gm = ("dc", 110593), ("tag", "george martin"), ("mb", "26fa8b67-x")
+        g.same, g.release_artists, g.members, g.mbart = cr.Same(), {}, {}, {}
+        g.name = {hend: "Jimi Hendrix", tagged: "George Martin", gm: "George Martin"}
+        lib = {"Jimi Hendrix - Axis": {"artist": "Jimi Hendrix", "album": "Axis", "tracks": [[1, 1, "t"]]},
+               "Love - False Start": {"artist": "Love", "album": "False Start", "tracks": [[1, 1, "t"]]},
+               "The Beatles - Help!": {"artist": "The Beatles", "album": "Help!", "tracks": [[1, 1, "t"]]}}
+        def credit(root, name, role, group):
+            return (root, name, name, role, group, None)
+        g.chosen = {"Jimi Hendrix - Axis": {"Songwriters": ("Discogs", [credit(hend, "Jimi Hendrix", "Written-by", "Songwriters")])},
+                    "Love - False Start": {"Musicians": ("Discogs", [credit(hend, "Jimi Hendrix", "Lead Guitar", "Musicians")])},
+                    "The Beatles - Help!": {"Producers": ("MusicBrainz", [credit(gm, "George Martin", "Producer", "Producers"),
+                                                                          credit(tagged, "George Martin", "Producer", "Producers")])}}
+        w = people.assign(g, lib, has_bio=lambda r: True)
+        self.assertEqual(w.root_page[hend], "People/Jimi Hendrix")
+        self.assertEqual(w.root_page[gm], "People/George Martin")
+        self.assertNotIn(tagged, w.root_page)
+
+
+class Capitals(unittest.TestCase):
+    def test_one_page_for_names_that_differ_in_capitals(self):
+        import credits as cr
+        from wiki import people
+        from wiki.graph import Graph
+        g = Graph()
+        g.same, g.name, g.chosen = cr.Same(), {}, {"N - A": {}, "N - B": {}}
+        g.release_artists, g.members, g.mbart = {}, {}, {}
+        lib = {"N - A": {"artist": "Nightmares On Wax", "album": "A", "tracks": []},
+               "N - B": {"artist": "Nightmares on Wax", "album": "B", "tracks": []}}
+        w = people.assign(g, lib)
+        self.assertEqual(w.artist_page["Nightmares On Wax"], w.artist_page["Nightmares on Wax"])
+        self.assertEqual(len(set(w.canon.values())), 1)
 
 
 class Writing(unittest.TestCase):

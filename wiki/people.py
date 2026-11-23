@@ -147,13 +147,25 @@ def assign(g, lib, has_bio=lambda root: False):
     w = Wiki()
     w.key, w.keyed, w.albums_of = key_people(g, lib)
     w.lib_root = library_artist_roots(g, lib)
-    w.artist_page = {}
-    for k in lib:
+    w.artist_page, w.canon, first = {}, {}, {}
+    for k in sorted(lib):
         tag = lib[k]["artist"]
-        w.artist_page.setdefault(tag, md.person_place(tag))
+        key = md.file_name(tag).casefold()     # the iPod's disk doesn't tell capitals apart
+        first.setdefault(key, tag)
+        w.canon[tag] = first[key]
+        w.artist_page.setdefault(tag, md.person_place(first[key]))
     taken = {md.file_name(t).casefold(): t for t in w.artist_page}
+    by_fold = {cr.fold(t): w.canon[t] for t in w.artist_page}
+    for r in w.keyed:
+        # a key person named as a library artist, credited on an album that
+        # artist's name is in, is that artist (MF DOOM, Jimi Hendrix, Brian Eno
+        # on "Brian Eno, David Byrne"): their artist page, not a second one
+        tag = by_fold.get(cr.fold(g.name.get(r, "")))
+        if r not in w.lib_root and tag and any(cr.fold(tag) in cr.fold(lib[k]["artist"])
+                                               for k in w.albums_of.get(r, ()) if k in lib):
+            w.lib_root[r] = tag
 
-    people = [r for r in w.keyed if r not in w.lib_root
+    people = [r for r in w.keyed if r not in w.lib_root and r[0] != "tag"
               and (len(w.keyed[r]) >= 2 or has_bio(r))]
     by_file = defaultdict(list)
     for r in people:
@@ -163,7 +175,8 @@ def assign(g, lib, has_bio=lambda root: False):
         if not name:
             continue
         clash = len(rs) > 1 or name in taken
-        for r in rs:
+        for r in rs:                         # (a credit from the files' tags, with no ID, isn't
+                                             # someone else: it links to the page of that name)
             shown = g.name[r]
             if clash:
                 q = qualifier(g, r)
