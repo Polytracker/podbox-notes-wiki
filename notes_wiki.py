@@ -147,11 +147,16 @@ def main(argv=None):
             tracks[k] = ab.load_json(tn.CACHE / "albums" / f"{name}.json")
         if a["artist"] not in bios:
             bios[a["artist"]], photos[a["artist"]] = bio_record(a["artist"], a.get("folder"))
+    artists = {}
     for tag in w.artist_page:
-        mbids = [graph.mb_id(g, r) for r, t in w.lib_root.items() if t == tag]
-        mbid = next((m for m in mbids if m), None) or (bios.get(tag) or {}).get("mbid")
-        if mbid:
-            discs[tag] = lookups.discography(mbid, mb)
+        roots = [r for r, t in w.lib_root.items() if t == tag]
+        meta = bios.get(tag) or {}
+        artists[tag] = {"mbid": next((m for m in map(lambda r: graph.mb_id(g, r), roots) if m), None)
+                        or meta.get("mbid"),
+                        "qid": meta.get("wikidata"),
+                        "dcid": next((d for d in map(lambda r: graph.dc_id(g, r), roots) if d), None)}
+    print(f"\n== Studio albums: {len(artists)} artists")
+    discs = lookups.discographies(artists, session if online else None, mb, dc)
     folders = ab.load_json(ln.FOLDERS) or {}
     person_meta = {r: m for r, m in found.items() if m}
     L = pages.Library(lib, records, g, w, notes, tracks, bios, person_meta, discs, folders)

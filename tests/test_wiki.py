@@ -225,6 +225,64 @@ class Ids(unittest.TestCase):
             self.assertEqual(graph.dc_id(g, r), walk(r, "dc"), r)
 
 
+class StudioAlbums(unittest.TestCase):
+    """The ladder: Wikidata for all in one query, MusicBrainz for the rest
+    until it stops answering, Discogs last. Sites faked."""
+    def test_ladder(self):
+        from unittest import mock
+        from wiki import lookups
+        wd = {"results": {"bindings": [
+            {"artist": {"value": "http://www.wikidata.org/entity/Q10"},
+             "album": {"value": "http://www.wikidata.org/entity/Q11"}, "albumLabel": {"value": "First"},
+             "date": {"value": "1999-05-01T00:00:00Z"}, "rg": {"value": "rg-first"}},
+            {"artist": {"value": "http://www.wikidata.org/entity/Q10"},
+             "album": {"value": "http://www.wikidata.org/entity/Q11"}, "albumLabel": {"value": "First"},
+             "date": {"value": "1998-01-01T00:00:00Z"}},
+            {"artist": {"value": "http://www.wikidata.org/entity/Q10"},
+             "album": {"value": "http://www.wikidata.org/entity/Q12"}, "albumLabel": {"value": "Q12"}}]}}
+        mb_calls = []
+
+        class MB:
+            def get(self, url, params=None):
+                mb_calls.append(params["artist"])
+                return None                                # busy every time
+
+        class DC:
+            def get(self, url, params=None):
+                return {"pagination": {"pages": 1}, "releases": [
+                    {"type": "master", "role": "Main", "id": 1, "title": "Debut", "year": 2001},
+                    {"type": "master", "role": "Main", "id": 2, "title": "Live at Leeds", "year": 2003},
+                    {"type": "master", "role": "Appearance", "id": 3, "title": "Guesting", "year": 2004},
+                    {"type": "release", "role": "Main", "id": 4, "title": "Promo", "year": 2005}]}
+
+        artists = {"A": {"qid": "Q10"}, "B": {"mbid": "b1", "dcid": 7}, "C": {"mbid": "c1"},
+                   "D": {"mbid": "d1"}, "E": {"mbid": "e1", "dcid": 9}}
+        with mock.patch.object(lookups, "sparql", return_value=mock.Mock(ok=True, json=lambda: wd)), \
+                mock.patch.object(lookups, "wikidata_by_mbid", return_value={}):
+            got = lookups.discographies(artists, session=object(), mb=MB(), dc=DC(), say=lambda s: None)
+        self.assertEqual(got["A"], [{"id": "rg-first", "title": "First", "year": "1998"}])
+        self.assertEqual(mb_calls, ["b1", "c1", "d1"])          # stops after three busy answers
+        self.assertEqual([a["title"] for a in got["B"]], ["Debut"])   # Discogs, filtered
+        self.assertEqual([a["title"] for a in got["E"]], ["Debut"])   # Discogs without asking MusicBrainz
+        self.assertNotIn("C", got)                               # no answer anywhere: asked again next run
+        again = lookups.discographies(artists)                  # saved: no sites, same answers
+        self.assertEqual(again["A"], got["A"])
+        self.assertEqual(again["B"], got["B"])
+
+
+class Keys(unittest.TestCase):
+    def test_keys_file_wins(self):
+        import wiki
+        from wiki import ab
+        wiki.KEYS.write_text("discogs token = abc\nlastfm key =\n", encoding="utf-8")
+        try:
+            conf = ab.settings()
+            self.assertEqual(conf["discogs token"], "abc")
+            self.assertEqual(conf.get("ipod drive"), "G:")       # the settings file still read
+        finally:
+            wiki.KEYS.unlink()
+
+
 class Writing(unittest.TestCase):
     def test_own_edits_kept(self):
         f = NOTES / "People/Joni Mitchell.md"

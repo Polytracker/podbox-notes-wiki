@@ -1,5 +1,9 @@
 # Settings for the notes wiki.
 # Change a value after the = sign and save. A line starting with # is ignored.
+#
+# Keys are best kept in a file of their own beside this one, "Notes Wiki
+# keys.txt", written the same way (discogs token = ...). It's never uploaded,
+# and an update never touches it. A key there wins over one here.
 
 # The iPod's drive letter, as File Explorer shows it.
 ipod drive = G:

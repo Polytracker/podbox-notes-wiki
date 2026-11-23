@@ -3,3 +3,5 @@ __pycache__/
 .pytest_cache/
 # reports the copied scripts write beside themselves
 liner/*.txt
+# your own keys (Discogs, Last.fm, DeepL): never pushed
+Notes Wiki keys.txt

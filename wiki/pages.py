@@ -80,7 +80,7 @@ class Library:
         self.tracks = tracks        # album key -> track_notes.py's saved record
         self.bios = bios            # album artist tag -> artist_bios.py's saved record
         self.people = people        # root -> lookups.person()'s record
-        self.discs = discs          # album artist tag -> lookups.discography() list
+        self.discs = discs          # album artist tag -> lookups.discographies() list
         self.folders = folders      # folder -> liner_notes.py's saved tags
         names = {}
         for tag, place in w.artist_page.items():
@@ -406,12 +406,13 @@ def artist_page(lib, tag):
     owned = lib.by_artist.get(tag, [])
     rg_of = {((lib.records.get(k) or {}).get("mb") or {}).get("rg"): k for k in owned}
     rg_of.pop(None, None)
+    by_title = {cr.fold(lib.title(k)): k for k in owned}
     studio = lib.discs.get(tag)
     listed = set()
     if studio:
         p.lines += ["## Studio Albums", ""]
         for rg in studio:
-            k = rg_of.get(rg["id"])
+            k = rg_of.get(rg["id"]) or by_title.get(cr.fold(rg["title"]))
             if k:
                 listed.add(k)
                 p.lines.append(album_line(lib, k))

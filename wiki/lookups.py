@@ -1,8 +1,13 @@
 """The lookups ipod-liner-notes doesn't do, saved beside its own caches in
 %APPDATA%\\RockboxArtistArt\\notes wiki\\.
 
-- discography(): an artist's studio albums from MusicBrainz, for the Bio
-  page's Studio Albums (all of them, not just the library's).
+- discographies(): each artist's studio albums, for the Bio page's Studio
+  Albums (all of them, not just the library's). Wikidata first, for every
+  artist in one query; MusicBrainz for those Wikidata has none for (it marks
+  studio albums best, but answers one request a second, and less when busy,
+  so it's left for the run after BUSY_MAX failures in a row); Discogs last,
+  which doesn't mark studio albums, so its list is filtered by format and
+  title (FROM_DISCOGS_NOT).
 - people(): key people's bios, many at a time. Wikidata gives each
   MusicBrainz ID's item, English Wikipedia article, dates and picture in one
   query for hundreds of people; Wikipedia gives article openings 20 at a
@@ -49,28 +54,154 @@ def studio_albums(groups):
     return out
 
 
-def discography(mbid, site=None, refresh_days=180):
-    """[{id, title, year}] for the artist's studio albums, or None if never
-    looked up. With `site` None, only what was saved."""
-    path = DISCS / f"{re.sub(r'[^A-Za-z0-9-]', '', mbid)}.json"
-    saved = ab.load_json(path)
-    if site is None or (saved and _age_days(saved) < refresh_days):
-        return saved.get("albums") if saved else None
+BUSY_MAX = 3
+WD_ALBUMS_BATCH = 100
+STUDIO_ALBUM = "Q208569"
+FROM_DISCOGS_NOT = re.compile(r"\b(live|greatest|best of|hits|collection|anthology|essential|remix(es)?|"
+                              r"demos?|sessions|b-sides|rarities|singles|ep|soundtrack|tour)\b", re.I)
+
+
+def _disc_path(key):
+    return DISCS / f"{re.sub(r'[^A-Za-z0-9_-]', '', key)}.json"
+
+
+def _disc_key(a):
+    """Where an artist's list is kept: by MusicBrainz ID, else Wikidata, else
+    Discogs (lists saved by MusicBrainz ID before keep being found)."""
+    if a.get("mbid"):
+        return a["mbid"]
+    return f"wd_{a['qid']}" if a.get("qid") else (f"dc_{a['dcid']}" if a.get("dcid") else None)
+
+
+def _save_disc(a, albums, source):
+    DISCS.mkdir(parents=True, exist_ok=True)
+    ab.save_json(_disc_path(_disc_key(a)), {**{k: v for k, v in a.items() if v}, "source": source,
+                                             "fetched": time.strftime("%Y-%m-%d"), "albums": albums})
+    return albums
+
+
+def mb_albums(mbid, site):
+    """The studio albums MusicBrainz has for an artist, or None if it didn't answer."""
     groups, offset = [], 0
     while True:
         data = site.get(f"{ids.MB}release-group", {"artist": mbid, "type": "album", "limit": 100,
                                                     "offset": offset, "fmt": "json"})
         if data is None:
-            return saved.get("albums") if saved else None
+            return None
         page = data.get("release-groups") or []
         groups += page
         offset += len(page)
         if not page or offset >= (data.get("release-group-count") or 0):
-            break
-    DISCS.mkdir(parents=True, exist_ok=True)
-    rec = {"mbid": mbid, "fetched": time.strftime("%Y-%m-%d"), "albums": studio_albums(groups)}
-    ab.save_json(path, rec)
-    return rec["albums"]
+            return studio_albums(groups)
+
+
+def wd_albums(qids, session):
+    """{artist's Wikidata item: [studio albums]} for many artists, a query per
+    WD_ALBUMS_BATCH; None for a batch Wikidata didn't answer."""
+    out = {}
+    for n in range(0, len(qids), WD_ALBUMS_BATCH):
+        batch = [q for q in qids[n:n + WD_ALBUMS_BATCH] if re.fullmatch(r"Q\d+", q)]
+        if not batch:
+            continue
+        query = ("SELECT ?artist ?album ?albumLabel ?date ?rg WHERE { "
+                 f"VALUES ?artist {{ {' '.join('wd:' + q for q in batch)} }} "
+                 f"?album wdt:P175 ?artist ; wdt:P31 wd:{STUDIO_ALBUM} . "
+                 "OPTIONAL { ?album wdt:P577 ?date } OPTIONAL { ?album wdt:P436 ?rg } "
+                 'SERVICE wikibase:label { bd:serviceParam wikibase:language "en,mul". } }')
+        r = sparql(session, query)
+        if r is None or not r.ok:
+            for q in batch:
+                out[q] = None
+            continue
+        found = {q: {} for q in batch}
+        for b in (r.json().get("results") or {}).get("bindings") or []:
+            v = {k: x.get("value", "") for k, x in b.items()}
+            q, item = v["artist"].rsplit("/", 1)[-1], v["album"].rsplit("/", 1)[-1]
+            title = v.get("albumLabel") or ""
+            if q not in found or not title or re.fullmatch(r"Q\d+", title):
+                continue
+            rec = found[q].setdefault(item, {"id": v.get("rg") or f"wd:{item}", "title": title, "year": ""})
+            y = ab.year((v.get("date") or "")[:4])
+            if y and (not rec["year"] or y < rec["year"]):
+                rec["year"] = y
+            if v.get("rg") and rec["id"].startswith("wd:"):
+                rec["id"] = v["rg"]
+        for q, albums in found.items():
+            out[q] = sorted(albums.values(), key=lambda r: (r["year"] or "9999", r["title"].casefold()))
+    return out
+
+
+def dc_albums(dcid, site):
+    """The artist's own albums on Discogs, as well as they can be told from
+    the rest: their main masters, less anything whose title says live,
+    best-of, soundtrack and so on. None if Discogs didn't answer."""
+    out, page = [], 1
+    while True:
+        data = site.get(f"{ids.DISCOGS}artists/{dcid}/releases",
+                        {"sort": "year", "sort_order": "asc", "per_page": 100, "page": page})
+        if data is None:
+            return None
+        for r in data.get("releases") or []:
+            if r.get("type") != "master" or r.get("role") != "Main" or FROM_DISCOGS_NOT.search(r.get("title") or ""):
+                continue
+            out.append({"id": f"dc:{r['id']}", "title": r.get("title") or "", "year": str(r.get("year") or "")})
+        pages = (data.get("pagination") or {}).get("pages") or 1
+        if page >= pages:
+            return out
+        page += 1
+
+
+def discographies(artists, session=None, mb=None, dc=None, refresh_days=180, say=print):
+    """{album artist: [{id, title, year}]} for {album artist: {mbid, qid, dcid}}.
+    With no sites, only what was saved."""
+    out, due = {}, {}
+    for tag, a in artists.items():
+        key = _disc_key(a)
+        if not key:
+            continue
+        saved = ab.load_json(_disc_path(key))
+        if saved:
+            out[tag] = saved.get("albums")
+        if session is not None and not (saved and _age_days(saved) < refresh_days):
+            due[tag] = dict(a)
+    if not due:
+        return out
+    say(f"  studio albums for {len(due)} artists: Wikidata")
+    need_qid = sorted({a["mbid"] for a in due.values() if a.get("mbid") and not a.get("qid")})
+    if need_qid:
+        by_mbid = wikidata_by_mbid(need_qid, session)
+        for a in due.values():
+            if not a.get("qid") and a.get("mbid") in by_mbid:
+                a["qid"] = by_mbid[a["mbid"]]["wikidata"]
+    wd = wd_albums(sorted({a["qid"] for a in due.values() if a.get("qid")}), session)
+    rest = []
+    for tag, a in due.items():
+        albums = wd.get(a.get("qid"))
+        if albums:
+            out[tag] = _save_disc(a, albums, "wikidata")
+        else:
+            rest.append(tag)
+    say(f"  Wikidata had {len(due) - len(rest)}; MusicBrainz and Discogs for {len(rest)}")
+    busy = 0
+    for tag in rest:
+        a, albums = due[tag], None
+        if mb is not None and a.get("mbid") and busy < BUSY_MAX:
+            albums = mb_albums(a["mbid"], mb)
+            busy = busy + 1 if albums is None else 0
+            if busy == BUSY_MAX:
+                say("  MusicBrainz isn't answering: the rest go to Discogs this run")
+            if albums:
+                out[tag] = _save_disc(a, albums, "musicbrainz")
+                continue
+        if dc is not None and a.get("dcid"):
+            got = dc_albums(a["dcid"], dc)
+            if got is not None:
+                albums = got
+                out[tag] = _save_disc(a, albums, "discogs")
+                continue
+        if albums is not None:                # an answer of none is kept as one
+            out[tag] = _save_disc(a, albums, "musicbrainz")
+    return out
 
 
 def person_key(mbid, dcid):

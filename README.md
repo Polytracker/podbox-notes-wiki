@@ -38,7 +38,10 @@ it again to carry on.
 Settings -- the iPod's drive, the music folder, how often to look again,
 and the Last.fm, Discogs and DeepL keys -- are in `Notes Wiki settings.txt`.
 Each key adds a source; without them the program still runs, with
-Wikipedia, MusicBrainz and your files' own tags.
+Wikipedia, MusicBrainz and your files' own tags. Put keys in a file of
+their own beside it, `Notes Wiki keys.txt`, one a line as in the settings
+file (`discogs token = ...`): git never uploads it and an update never
+overwrites it.
 
 ## What it writes
 

@@ -11,7 +11,7 @@ For someone changing the program. `README.md` is for someone running it.
 | `wiki/md.py` | The Markdown the viewer reads, and its file names |
 | `wiki/graph.py` | Who is credited where: the middle of `credits.py`'s `main()`, kept as data |
 | `wiki/people.py` | Key people, who gets a page, and each page's file |
-| `wiki/lookups.py` | Studio albums from MusicBrainz, and key people's bios many at a time: Wikidata by MusicBrainz ID (a query for hundreds), Wikipedia's openings 20 at a time, Last.fm and Discogs by ID for the rest, pictures from Wikimedia Commons |
+| `wiki/lookups.py` | Studio albums (Wikidata for everyone in one query, then MusicBrainz, then Discogs), and key people's bios many at a time: Wikidata by MusicBrainz ID (a query for hundreds), Wikipedia's openings 20 at a time, Last.fm and Discogs by ID for the rest, pictures from Wikimedia Commons |
 | `wiki/pages.py` | The pages |
 | `wiki/write.py` | Banners, and writing `/Notes` |
 
@@ -30,7 +30,7 @@ taken by copying the file again. Anything this project needs goes in
    credits and who is who.
 3. Key people (`people.key_people()`), and `lookups.people()` for them all.
 4. `people.assign()`: who has a page, and where.
-5. `lookups.discography()` for each library artist.
+5. `lookups.discographies()`: studio albums, Wikidata first, then MusicBrainz, then Discogs.
 6. `pages.all_pages()`, then `Writer` puts each page and banner; a key person's picture
    (`lookups.photo()`) is fetched only for those who get a page.
 
