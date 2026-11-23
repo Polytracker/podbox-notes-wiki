@@ -1,0 +1,31 @@
+# Settings for the notes wiki.
+# Change a value after the = sign and save. A line starting with # is ignored.
+
+# The iPod's drive letter, as File Explorer shows it.
+ipod drive = G:
+
+# The music folder on the iPod. Leave empty for the Music folder on the drive.
+music folder =
+
+# Days before artists, albums and people nothing was found for are looked
+# for again (0 = never).
+recheck missing days = 30
+
+# Days before an artist's bio is checked again (0 = never). Artists who have
+# died and bands that have split are never rechecked. A bio is only replaced
+# if it has really changed, and never if you edited the page yourself.
+bio recheck days = 365
+
+# Days before an album's notes are checked again (0 = never).
+notes recheck days = 365
+
+# yes or no: the pictures at the top of the pages. no writes the text only.
+banners = yes
+
+# Your Discogs personal token, an extra source. Leave empty to skip Discogs.
+discogs token =
+
+# Your DeepL key, to translate bios and notes for artists who don't work in
+# English (free at deepl.com/pro-api: 500,000 characters a month). Leave
+# empty to skip translation. Only text that isn't English is ever sent.
+deepl key =
