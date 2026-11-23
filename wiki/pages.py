@@ -17,6 +17,7 @@ from collections import defaultdict
 from . import md
 from . import ab
 from . import graph
+from . import show
 import credits as cr
 import ids
 import translate as tr
@@ -339,7 +340,7 @@ def tracks_pages(lib, k):
                 p.lines.append(lib.linker.line(tr.plain(line), p) if plain else line)
         pages.append(p)
     if len(parts) > TRACK_PARTS:
-        print(f"  {k}: the track notes fill more than {TRACK_PARTS} pages; the rest are left out")
+        show.warn(f"{k}: the track notes fill more than {TRACK_PARTS} pages; the rest are left out")
     return pages
 
 

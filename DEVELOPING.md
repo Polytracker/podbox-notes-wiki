@@ -14,6 +14,7 @@ For someone changing the program. `README.md` is for someone running it.
 | `wiki/lookups.py` | Studio albums (Wikidata for everyone in one query, then MusicBrainz, then Discogs), and key people's bios many at a time: Wikidata by MusicBrainz ID (a query for hundreds), Wikipedia's openings 20 at a time, Last.fm and Discogs by ID for the rest, pictures from Wikimedia Commons |
 | `wiki/pages.py` | The pages |
 | `wiki/write.py` | Banners, and writing `/Notes` |
+| `wiki/show.py` | How the run looks: the banner, stage headings, progress bars, the spinner and colours (plain lines when the output goes to a file; `NO_COLOR=1` turns colour off) |
 
 The copied scripts stay as they are, so a fix made in ipod-liner-notes is
 taken by copying the file again. Anything this project needs goes in

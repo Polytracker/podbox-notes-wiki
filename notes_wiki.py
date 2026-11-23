@@ -27,10 +27,11 @@ Usage:
 import argparse
 import os
 import sys
+import time
 from pathlib import Path
 
 import wiki                                    # noqa: F401  (liner/ on the path, settings file)
-from wiki import ab, graph, lookups, pages, people
+from wiki import ab, graph, lookups, pages, people, show
 from wiki.write import Writer, banner
 import credits as cr
 import ids
@@ -58,11 +59,12 @@ def run_lookups(music, args, conf):
              ("Album notes", ln.main, common),
              ("Track notes", tn.main, common),
              ("Credits", cr.main, common)]
-    for title, main, argv in steps:
-        print(f"\n== {title}")
+    for n, (title, main, argv) in enumerate(steps, 1):
+        stage = show.Stage(f"{title} ({n} of {len(steps)}, by the scripts from ipod-liner-notes)")
         if main(argv):
-            print(f"{title} stopped. Fix what it says and run again.")
+            show.error(f"{title} stopped. Fix what it says and run again.")
             return False
+        stage.done()
     return True
 
 
@@ -107,24 +109,34 @@ def main(argv=None):
         music = Path(args.music)
     key = lastfm_key(conf)
 
-    if not args.offline:
+    began = time.time()
+    online = not args.offline
+    out = Path(args.out) / "Notes" if args.out else drive / "Notes"
+    show.banner(f"  The notes wiki for PodBox{DOT}{'looking everything up' if online else 'offline: from what is saved'}"
+                f"{DOT}writing to {out}" + (f"{DOT}dry run: nothing written" if args.dry_run else ""))
+
+    if online:
         if not music.is_dir():
-            print(f"Can't find {music}. Is the iPod plugged in?")
+            show.error(f"Can't find {music}. Is the iPod plugged in?")
             return 1
         if not run_lookups(music, args, conf):
             return 1
 
     lib = ids.library().get("albums") or {}
     if not lib:
-        print("No albums identified yet: run without --offline first.")
+        show.error("No albums identified yet: run without --offline first.")
         return 1
     records = cr.load_records(lib)
-    online = not args.offline
     token = conf.get("discogs token") or os.environ.get("DISCOGS_TOKEN")
     mb = ids.Site(1.1) if online else None
     dc = ids.Site(1.1, {"Authorization": f"Discogs token={token}"}) if online and token else None
-    print(f"\n== Who's who, across {len(lib)} albums")
-    g = graph.build(lib, records, mb, dc)
+    if online and not token:
+        show.info("No Discogs token: Discogs is skipped (see the settings file)")
+
+    stage = show.Stage(f"Who's who, across {len(lib)} albums")
+    with show.Spinner("Reading the credits and joining people across MusicBrainz and Discogs"):
+        g = graph.build(lib, records, mb, dc, progress=lambda *a, **k: None)
+    stage.done(f"{len(g.appear):,} people credited")
 
     # -- key people: a page if key on two albums or more, or if a bio is found
     per_album, keyed, _ = people.key_people(g, lib)
@@ -132,11 +144,18 @@ def main(argv=None):
     candidates = [r for r in sorted(keyed, key=str) if r not in lib_roots]
     session = __import__("requests").Session()
     look = argparse.Namespace(lastfm_key=key, discogs_token=token)
-    print(f"\n== Key people: {len(candidates)}")
+    stage = show.Stage(f"Key people: {len(candidates):,}")
     wanted = [(r, g.name.get(r, ""), graph.mb_id(g, r), graph.dc_id(g, r)) for r in candidates]
     wanted = [x for x in wanted if x[2] or x[3]]
     found = lookups.people(wanted, session, look, online=online)
     w = people.assign(g, lib, has_bio=lambda r: lookups.enough_bio(found.get(r)))
+    sources = {}
+    for m in found.values():
+        if lookups.enough_bio(m):
+            sources[m.get("bio_source")] = sources.get(m.get("bio_source"), 0) + 1
+    with_page = sum(1 for r in w.root_page if r not in w.lib_root)
+    stage.done(f"{with_page:,} get a page; bios: " +
+               ", ".join(f"{n:,} {src}" for src, n in sorted(sources.items(), key=lambda x: -x[1])) or "none")
 
     # -- what the pages are written from
     notes, tracks, bios, photos, discs = {}, {}, {}, {}, {}
@@ -155,19 +174,31 @@ def main(argv=None):
                         or meta.get("mbid"),
                         "qid": meta.get("wikidata"),
                         "dcid": next((d for d in map(lambda r: graph.dc_id(g, r), roots) if d), None)}
-    print(f"\n== Studio albums: {len(artists)} artists")
+    stage = show.Stage(f"Studio albums: {len(artists)} artists")
     discs = lookups.discographies(artists, session if online else None, mb, dc)
-    folders = ab.load_json(ln.FOLDERS) or {}
-    person_meta = {r: m for r, m in found.items() if m}
-    L = pages.Library(lib, records, g, w, notes, tracks, bios, person_meta, discs, folders)
-    every = pages.all_pages(L)
+    stage.done(f"{sum(1 for v in discs.values() if v)} artists have a list; "
+               f"the rest show the albums you own")
+
+    stage = show.Stage("Making the pages")
+    with show.Spinner("Linking names, credits and appearances"):
+        folders = ab.load_json(ln.FOLDERS) or {}
+        person_meta = {r: m for r, m in found.items() if m}
+        L = pages.Library(lib, records, g, w, notes, tracks, bios, person_meta, discs, folders)
+        every = pages.all_pages(L)
+    kinds = {}
+    for p in every:
+        kinds[p.kind] = kinds.get(p.kind, 0) + 1
+    names = {"album": "albums", "credits": "credits", "appearances": "other appearances", "tracks": "tracks",
+             "artist": "artists", "person": "key people"}
+    stage.done(f"{len(every):,} pages: " + ", ".join(f"{kinds[k]:,} {names[k]}" for k in names if k in kinds))
 
     # -- onto the iPod
-    out = Path(args.out) / "Notes" if args.out else drive / "Notes"
-    print(f"\n== Writing {len(every)} pages to {out}" + (" (dry run: nothing written)" if args.dry_run else ""))
+    stage = show.Stage(f"Writing to {out}" + (" (dry run: nothing written)" if args.dry_run else ""))
     wr = Writer(out, args.dry_run)
-    banners = 0
+    banners, no_banner = 0, []
+    bar = show.Bar("Pages and banners", len(every))
     for p in every:
+        bar.update(note=p.place.split("/", 1)[-1])
         wr.put(p.place, ".md", p.text().encode("utf-8"))
         if args.no_banners:
             continue
@@ -196,15 +227,28 @@ def main(argv=None):
                 wr.put(p.place, ".jpg", banner(pic, centre))
                 banners += 1
             except Exception as e:
-                print(f"  {p.place}: no banner ({e})")
+                no_banner.append(f"{p.place}: {e}")
+    bar.close(f"{len(every):,} pages, {banners:,} banners")
     wr.marker()
     wr.save()
     c = wr.counts
-    print(f"Pages and banners written or updated: {c['written']}, unchanged: {c['same']}, "
-          f"kept as you left them: {c['kept']}. Banners: {banners}.")
+    for f in no_banner[:10]:
+        show.warn(f"no banner: {f}")
+    if len(no_banner) > 10:
+        show.warn(f"and {len(no_banner) - 10} more without a banner")
     for f in wr.kept[:20]:
-        print(f"  kept: {f}")
+        show.warn(f"kept as you left it: {f}")
+    if len(wr.kept) > 20:
+        show.warn(f"and {len(wr.kept) - 20} more kept as you left them")
+    stage.done(f"{c['written']:,} written or updated, {c['same']:,} unchanged, {c['kept']:,} kept as you left them")
+
+    print()
+    show.good(show.bold(f"Done in {show.clock(time.time() - began)}. ") +
+              (f"The wiki is in {out}." if not args.dry_run else "Dry run: nothing was written."))
     return 0
+
+
+DOT = "  \u00b7  "
 
 
 if __name__ == "__main__":

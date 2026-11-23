@@ -24,6 +24,7 @@ import re
 import time
 
 from . import ab
+from . import show
 import ids
 import liner_notes as ln
 
@@ -151,7 +152,7 @@ def dc_albums(dcid, site):
         page += 1
 
 
-def discographies(artists, session=None, mb=None, dc=None, refresh_days=180, say=print):
+def discographies(artists, session=None, mb=None, dc=None, refresh_days=180, say=show.info):
     """{album artist: [{id, title, year}]} for {album artist: {mbid, qid, dcid}}.
     With no sites, only what was saved."""
     out, due = {}, {}
@@ -164,16 +165,17 @@ def discographies(artists, session=None, mb=None, dc=None, refresh_days=180, say
             out[tag] = saved.get("albums")
         if session is not None and not (saved and _age_days(saved) < refresh_days):
             due[tag] = dict(a)
+    say(f"{len(out)} already saved, {len(due)} to look up")
     if not due:
         return out
-    say(f"  studio albums for {len(due)} artists: Wikidata")
-    need_qid = sorted({a["mbid"] for a in due.values() if a.get("mbid") and not a.get("qid")})
-    if need_qid:
-        by_mbid = wikidata_by_mbid(need_qid, session)
-        for a in due.values():
-            if not a.get("qid") and a.get("mbid") in by_mbid:
-                a["qid"] = by_mbid[a["mbid"]]["wikidata"]
-    wd = wd_albums(sorted({a["qid"] for a in due.values() if a.get("qid")}), session)
+    with show.Spinner(f"Asking Wikidata for {len(due)} artists' studio albums"):
+        need_qid = sorted({a["mbid"] for a in due.values() if a.get("mbid") and not a.get("qid")})
+        if need_qid:
+            by_mbid = wikidata_by_mbid(need_qid, session)
+            for a in due.values():
+                if not a.get("qid") and a.get("mbid") in by_mbid:
+                    a["qid"] = by_mbid[a["mbid"]]["wikidata"]
+        wd = wd_albums(sorted({a["qid"] for a in due.values() if a.get("qid")}), session)
     rest = []
     for tag, a in due.items():
         albums = wd.get(a.get("qid"))
@@ -181,15 +183,17 @@ def discographies(artists, session=None, mb=None, dc=None, refresh_days=180, say
             out[tag] = _save_disc(a, albums, "wikidata")
         else:
             rest.append(tag)
-    say(f"  Wikidata had {len(due) - len(rest)}; MusicBrainz and Discogs for {len(rest)}")
+    say(f"Wikidata had {len(due) - len(rest)}; MusicBrainz and Discogs for {len(rest)}")
     busy = 0
+    bar = show.Bar("MusicBrainz and Discogs", len(rest))
     for tag in rest:
+        bar.update(note=tag)
         a, albums = due[tag], None
         if mb is not None and a.get("mbid") and busy < BUSY_MAX:
             albums = mb_albums(a["mbid"], mb)
             busy = busy + 1 if albums is None else 0
             if busy == BUSY_MAX:
-                say("  MusicBrainz isn't answering: the rest go to Discogs this run")
+                show.warn("MusicBrainz isn't answering: the rest go to Discogs this run")
             if albums:
                 out[tag] = _save_disc(a, albums, "musicbrainz")
                 continue
@@ -201,6 +205,7 @@ def discographies(artists, session=None, mb=None, dc=None, refresh_days=180, say
                 continue
         if albums is not None:                # an answer of none is kept as one
             out[tag] = _save_disc(a, albums, "musicbrainz")
+    bar.close(f"{sum(1 for t in rest if out.get(t))} found")
     return out
 
 
@@ -284,7 +289,7 @@ def urllib_unquote(s):
     return urllib.parse.unquote(s)
 
 
-def people(wanted, session, args, online=True, retry_days=30, refresh_days=365, say=print):
+def people(wanted, session, args, online=True, retry_days=30, refresh_days=365, say=show.info):
     """{key: record} for [(key, name, MusicBrainz ID, Discogs ID)], looking up
     those due. `args` gives lastfm_key and discogs_token."""
     PEOPLE.mkdir(parents=True, exist_ok=True)
@@ -294,18 +299,28 @@ def people(wanted, session, args, online=True, retry_days=30, refresh_days=365, 
         have[key] = meta
         if online and _due(meta, retry_days, refresh_days):
             due.append((key, name, mbid, dcid))
+    say(f"{len(wanted) - len(due):,} already saved, {len(due):,} to look up")
     if not due:
         return have
     today = time.strftime("%Y-%m-%d")
-    say(f"  looking up {len(due)} of {len(wanted)}: Wikidata")
-    wd = wikidata_by_mbid(sorted({m for _, _, m, _ in due if m}), session)
+    mbids = sorted({m for _, _, m, _ in due if m})
+    with show.Spinner(f"Asking Wikidata about {len(mbids):,} people, {SPARQL_BATCH} a query"):
+        wd = wikidata_by_mbid(mbids, session)
+    say(f"Wikidata knows {len(wd):,} of them")
     titles = sorted({wd[m]["article"] for _, _, m, _ in due if m in wd and wd[m].get("article")})
-    say(f"  Wikipedia: {len(titles)} articles")
     intros = {}
+    bar = show.Bar("Wikipedia", len(titles))
     for n in range(0, len(titles), 20):
         intros.update(ln.wiki_summaries(titles[n:n + 20], session))
-    rest = 0
-    for key, name, mbid, dcid in due:
+        bar.update(len(titles[n:n + 20]))
+    bar.close(f"{len(intros):,} articles read")
+    found, rest = [], []
+    for item in due:
+        w = wd.get(item[2]) or {}
+        (found if intros.get(w.get("article") or "") else rest).append(item)
+    asked = args.lastfm_key or args.discogs_token
+    bar = show.Bar("Last.fm and Discogs", len(rest) if asked else 0)
+    for key, name, mbid, dcid in found + rest:
         w = wd.get(mbid) or {}
         new = {"artist": name, "mbid": mbid, "discogs": dcid, "wikidata": w.get("wikidata"),
                "image": w.get("image", ""), "bio": "", "bio_source": "", "fetched": today,
@@ -313,8 +328,8 @@ def people(wanted, session, args, online=True, retry_days=30, refresh_days=365, 
         text = intros.get(w.get("article") or "")
         if text:
             new.update(bio=ab.trim_bio(text), bio_source="wikipedia", bio_title=w["article"], bio_date=today)
-        else:
-            rest += 1
+        elif asked:
+            bar.update(note=name)
             try:
                 if args.lastfm_key and mbid:
                     text = ab.lastfm_bio(name, session, args.lastfm_key, mbid)
@@ -331,7 +346,8 @@ def people(wanted, session, args, online=True, retry_days=30, refresh_days=365, 
             new.update({k: old.get(k) for k in ab.BIO_FIELDS})      # a site being down costs nothing
         ab.save_json(PEOPLE / f"{person_key(mbid, dcid)}.json", new)
         have[key] = new
-    say(f"  Last.fm and Discogs asked about {rest}")
+    if asked:
+        bar.close(f"{sum(1 for k, *_ in rest if enough_bio(have[k])):,} more bios found")
     return have
 
 
