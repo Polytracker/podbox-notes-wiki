@@ -25,6 +25,10 @@ banners = yes
 # Your Discogs personal token, an extra source. Leave empty to skip Discogs.
 discogs token =
 
+# Your Last.fm API key (free at last.fm/api), an extra source for bios and
+# notes. Leave empty to skip Last.fm, or to use the one iPod Liner Notes saved.
+lastfm key =
+
 # Your DeepL key, to translate bios and notes for artists who don't work in
 # English (free at deepl.com/pro-api: 500,000 characters a month). Leave
 # empty to skip translation. Only text that isn't English is ever sent.

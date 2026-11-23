@@ -22,6 +22,7 @@ Usage:
   python notes_wiki.py --offline       pages only, from what's saved
   python notes_wiki.py --dry-run       says what it would write, writes nothing
   python notes_wiki.py --out FOLDER    writes the pages there, not onto the iPod
+  python notes_wiki.py --music FOLDER  the music folder, if not the settings file's
 """
 import argparse
 import os
@@ -84,14 +85,29 @@ def bio_record(tag, folder):
     return None, None
 
 
+def lastfm_key(conf):
+    """The Last.fm key: the settings file's, saved where the copied scripts
+    read it (art_fetch.py's credentials file), else the one already there."""
+    key = conf.get("lastfm key", "").strip()
+    creds = ab.af.load_credentials()
+    if key and key != creds.lastfm_api_key:
+        creds.lastfm_api_key = key
+        ab.af.save_credentials(creds)
+    return creds.lastfm_api_key or None
+
+
 def main(argv=None):
     conf, drive, music = settings()
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--music", help="the music folder (default: from the settings file)")
     ap.add_argument("--offline", action="store_true", help="no lookups: pages from what's saved")
     ap.add_argument("--dry-run", action="store_true", help="write nothing, say what would be written")
     ap.add_argument("--out", help="the folder to write Notes into (default: the iPod)")
     ap.add_argument("--no-banners", action="store_true", default=not ab.setting_on(conf, "banners", True))
     args = ap.parse_args(argv)
+    if args.music:
+        music = Path(args.music)
+    key = lastfm_key(conf)
 
     if not args.offline:
         if not music.is_dir():
@@ -118,7 +134,7 @@ def main(argv=None):
     candidates = [r for r in keyed if r not in lib_roots]
     found = {}
     session = __import__("requests").Session()
-    look = argparse.Namespace(lastfm_key=ab.af.load_credentials().lastfm_api_key or None,
+    look = argparse.Namespace(lastfm_key=key,
                               discogs_token=token, long_bio=ab.LONG_BIO, no_banners=args.no_banners,
                               translator=tr.Translator(conf.get("deepl key"), ab.CACHE.parent / "translations.json",
                                                        session))

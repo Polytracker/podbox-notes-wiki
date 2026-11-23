@@ -33,9 +33,12 @@ it again to carry on.
 | `--dry-run` | Says what it would write, and writes nothing |
 | `--out FOLDER` | Writes `Notes` into that folder instead of onto the iPod |
 | `--no-banners` | Text only, no pictures |
+| `--music FOLDER` | The music folder, if not the one in the settings file |
 
 Settings -- the iPod's drive, the music folder, how often to look again,
-and the Discogs and DeepL keys -- are in `Notes Wiki settings.txt`.
+and the Last.fm, Discogs and DeepL keys -- are in `Notes Wiki settings.txt`.
+Each key adds a source; without them the program still runs, with
+Wikipedia, MusicBrainz and your files' own tags.
 
 ## What it writes
 
