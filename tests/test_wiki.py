@@ -374,6 +374,21 @@ class Capitals(unittest.TestCase):
         w = people.assign(g, lib)
         self.assertEqual(w.artist_page["Nightmares On Wax"], w.artist_page["Nightmares on Wax"])
         self.assertEqual(len(set(w.canon.values())), 1)
+        self.assertEqual(w.case_clashes, [])
+
+    def test_different_artists_differing_in_capitals_are_flagged(self):
+        import credits as cr
+        from wiki import people
+        from wiki.graph import Graph
+        g = Graph()
+        g.same, g.chosen = cr.Same(), {"L - A": {}, "L - B": {}}
+        a, b = ("mb", "low-us"), ("mb", "low-jp")
+        g.name = {a: "Low", b: "LOW"}
+        g.release_artists, g.members, g.mbart = {"L - A": {a}, "L - B": {b}}, {}, {}
+        lib = {"L - A": {"artist": "Low", "album": "A", "tracks": []},
+               "L - B": {"artist": "LOW", "album": "B", "tracks": []}}
+        w = people.assign(g, lib)
+        self.assertEqual(w.case_clashes, [["LOW", "Low"]])
 
 
 class Writing(unittest.TestCase):

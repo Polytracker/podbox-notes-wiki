@@ -155,6 +155,16 @@ def assign(g, lib, has_bio=lambda root: False):
         w.canon[tag] = first[key]
         w.artist_page.setdefault(tag, md.person_place(first[key]))
     taken = {md.file_name(t).casefold(): t for t in w.artist_page}
+    # spellings sharing a page that the sites say are different artists
+    roots_of = defaultdict(set)
+    for r, t in w.lib_root.items():
+        roots_of[t].add(r)
+    spellings = defaultdict(list)
+    for t, c in w.canon.items():
+        spellings[c].append(t)
+    w.case_clashes = [sorted(ts) for ts in spellings.values() if len(ts) > 1
+                      and all(roots_of[ts[0]].isdisjoint(roots_of[t]) and roots_of[t] for t in ts[1:])
+                      and roots_of[ts[0]]]
     by_fold = {cr.fold(t): w.canon[t] for t in w.artist_page}
     for r in w.keyed:
         # a key person named as a library artist, credited on an album that

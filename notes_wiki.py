@@ -242,6 +242,9 @@ def main(argv=None):
         show.warn(f"and {len(wr.kept) - 20} more kept as you left them")
     stage.done(f"{c['written']:,} written or updated, {c['same']:,} unchanged, {c['kept']:,} kept as you left them")
 
+    for names in getattr(w, "case_clashes", []):
+        show.warn(f"{' and '.join(repr(n) for n in names)} are different artists to MusicBrainz, but the "
+                  f"iPod can't tell their names apart, so they share one page: check {w.artist_page[names[0]]}")
     print()
     show.good(show.bold(f"Done in {show.clock(time.time() - began)}. ") +
               (f"The wiki is in {out}." if not args.dry_run else "Dry run: nothing was written."))
