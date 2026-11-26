@@ -211,7 +211,8 @@ def main(argv=None):
         def wiki_work():
             s2 = __import__("requests").Session()
             try:
-                titles.run(lib, s2, say=lambda s: None, quiet=True)
+                titles.run(lib, s2, say=lambda s: None, quiet=True,
+                           deepl_key=conf.get("deepl key") or os.environ.get("DEEPL_KEY"))
                 full.fetch(articles, s2)
             except Exception as e:                          # reported, never fatal
                 background["error"] = e

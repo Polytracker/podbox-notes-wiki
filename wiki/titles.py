@@ -35,12 +35,13 @@ from . import show
 import ids
 import liner_notes as ln
 import track_notes as tn
+import translate as tr
 
 from .lookups import CACHE
 
 SAVED = CACHE / "tracks by title"
 RECHECK_DAYS = 180
-VERSION = 2
+VERSION = 3
 REPORT = "Tracks by title.txt"
 # What counts as a song: song, single, musical work or composition, instrumental
 SONG_TYPES = {"Q7366", "Q134556", "Q105543609", "Q207628", "Q2188189", "Q1428060"}
@@ -106,6 +107,31 @@ def songs_called(cat, title):
                               if a and not NOT_SONG.search(a) and want in _titles(label, a)))
 
 
+def items_called(cat, title):
+    """The artist's song entries with this title, with or without an English
+    article: the other-language step reads their other articles."""
+    want = ids.clean_title(title)
+    return list(dict.fromkeys(i for i, label, a in (cat or {}).get("songs", [])
+                              if not (a and NOT_SONG.search(a)) and want in _titles(label, a)))
+
+
+def translated(ents, album, lang, session, translator):
+    """(paragraphs, source) from one of the songs' articles in another
+    language, translated, as track_notes.py does it: the artist's own
+    language first, then ten others; the same checks. Or ([], why)."""
+    why = "no article in another language"
+    for ent in ents:
+        got = ln.foreign_notes({"ent": ent}, lang, session, translator)
+        if not got:
+            continue
+        why = tn.usable(" ".join(p for p in got[0] if not p.startswith("# ")), album["artist"],
+                        album=album["album"])
+        if not why:
+            return got
+        why = f"translated: {why}"
+    return [], why
+
+
 def album_called(cat, album):
     want = ids.clean_title(ids.plain_album(album))
     for item, label in (cat or {}).get("albums", []):
@@ -130,8 +156,11 @@ def written(article, album, intros, session):
     return ([], why) if why else (tn.english_paras(text, part, article), "")
 
 
-def run(lib, session, say=show.info, quiet=False):
-    """Looks up the albums due, all at once; everything is saved."""
+def run(lib, session, say=show.info, quiet=False, deepl_key=None):
+    """Looks up the albums due, all at once; everything is saved. With a
+    DeepL key, a track still without a write-up tries its song's article in
+    other languages, translated (nothing English is ever replaced by it)."""
+    translator = tr.Translator(deepl_key, tn.CACHE.parent / "translations.json", session) if deepl_key else None
     SAVED.mkdir(parents=True, exist_ok=True)
     due = []
     for k, album in sorted(lib.items()):
@@ -167,7 +196,8 @@ def run(lib, session, say=show.info, quiet=False):
                 continue
             first = tn.enwiki(songs[found[i]]) if i in found and tn.enwiki(songs[found[i]]) else ""
             cands = list(dict.fromkeys(([first] if first else []) + songs_called(cat, title)))
-            tracks[str(i)] = (cands, bool(first))
+            items = ([found[i]] if i in found else []) + items_called(cat, title)
+            tracks[str(i)] = (cands, bool(first), list(dict.fromkeys(items)))
             articles.update(cands)
         plans.append((k, album, seen, name, q, q_album, tracks))
     intros = {}
@@ -179,9 +209,10 @@ def run(lib, session, say=show.info, quiet=False):
             bar.update(len(articles[n:n + 20]))
     if bar:
         bar.close(f"{len(intros):,} read")
+    langs = {}
     for k, album, seen, name, q, q_album, tracks in plans:
         out = {}
-        for i, (cands, from_album) in tracks.items():
+        for i, (cands, from_album, items) in tracks.items():
             why = "no song of that title by the artist on Wikidata" if q else "the artist has no Wikidata item"
             for article in cands:
                 try:
@@ -196,6 +227,24 @@ def run(lib, session, say=show.info, quiet=False):
                     break
             else:
                 out[i] = {"paras": [], "why": why}
+                if translator and items:
+                    who = tn.artist_ids(album["artist"]) or {}
+                    if album["artist"] not in langs:
+                        try:
+                            langs[album["artist"]] = ln.artist_language(who, session) if who else None
+                        except ab.NET_ERRORS:
+                            langs[album["artist"]] = None
+                    try:
+                        ents = list(tn.song_items(items, session).values())
+                        paras, how = translated(ents, album, langs[album["artist"]], session, translator)
+                    except ab.NET_ERRORS as e:
+                        ab.problem(k, e)
+                        paras, how = [], "Wikipedia didn't answer"
+                    if paras:
+                        out[i] = {"paras": paras, "source": how, "article": "",
+                                  "how": f"title search, {how}"}
+                    else:
+                        out[i]["why"] = f"{why}; {how}"
         ab.save_json(SAVED / f"{name}.json", {"version": VERSION, "after": seen.get("checked"),
                                               "checked": int(time.time()), "album item": q_album,
                                               "tracks": out})
@@ -231,7 +280,8 @@ def report(lib, folder):
                 continue
             title = album["tracks"][int(i)][2]
             if t.get("how"):
-                filled.append(f"{k}: \"{title}\" from \"{t['article']}\" ({t['how']})")
+                filled.append(f"{k}: \"{title}\" from \"{t['article']}\" ({t['how']})" if t.get("article")
+                              else f"{k}: \"{title}\" ({t['how']})")
             elif (t.get("source") or "").startswith("last.fm"):
                 why = ((mine.get("tracks") or {}).get(i) or {}).get("why") or t.get("why") or "not searched yet"
                 lastfm.append(f"{k}: \"{title}\": {why}")

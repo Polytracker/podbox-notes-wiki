@@ -534,3 +534,25 @@ class BannerCache(unittest.TestCase):
         finally:
             notes_wiki.banner = keep
         self.assertGreater(first, 0)
+
+
+class QuickWrites(unittest.TestCase):
+    """An unchanged page isn't read back from the iPod; an edited one is
+    still noticed and kept."""
+    def test_unchanged_not_read_and_edits_kept(self):
+        from wiki import ab as _a
+        out = ROOT / "quick"
+        notes_wiki.main(["--offline", "--out", str(out)])
+        reads = []
+        keep = _a.sha1
+        _a.sha1 = lambda p: reads.append(p) or keep(p)
+        try:
+            notes_wiki.main(["--offline", "--out", str(out)])
+            self.assertEqual(reads, [])                       # nothing read back
+            mine = out / "Notes" / "Albums" / "Steely Dan - Aja.md"
+            mine.write_text("my own words\n", encoding="utf-8")
+            notes_wiki.main(["--offline", "--out", str(out)])
+            self.assertEqual(mine.read_text(encoding="utf-8"), "my own words\n")   # kept
+            self.assertEqual(len(reads), 1)                   # only the edited one checked
+        finally:
+            _a.sha1 = keep

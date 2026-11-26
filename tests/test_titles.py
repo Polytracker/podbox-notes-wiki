@@ -28,13 +28,16 @@ LONG = " It was recorded in 1977 with session players, and is among the band's b
 class R:
     def __init__(s, d): s.d, s.ok, s.status_code = d, True, 200
     def json(s): return s.d
+    def raise_for_status(s): pass
 
 def ent(label, article=None, p31="Q7366"):
     e = {"labels": {"en": {"value": label}}, "claims": {"P31": [{"mainsnak": {"datavalue": {"value": {"id": p31}}}}]}}
     if article:
         e["sitelinks"] = {"enwiki": {"title": article}}
     return e
-ENTS = {"Q7": ent("Black Cow", "Black Cow (song)"), "Q8": ent("Aja", "Aja (album)", "Q482994"),
+ENTS = {"Q11": {"labels": {"en": {"value": "Josie"}}, "sitelinks": {"frwiki": {"title": "Josie (chanson)"}},
+               "claims": {"P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q7366"}}}}]}},
+        "Q7": ent("Black Cow", "Black Cow (song)"), "Q8": ent("Aja", "Aja (album)", "Q482994"),
         "Q9": ent("Peg", "Peg (song)"), "Q300": ent("Gaucho", "Gaucho (album)", "Q482994"),
         "Q301": ent("Hey Nineteen", "Hey Nineteen")}
 INTROS = {"Black Cow (song)": '"Black Cow" is a song by Steely Dan.' + LONG,
@@ -48,7 +51,7 @@ def b(kind, item, label, article=""):
     if article:
         row["article"] = {"value": "https://en.wikipedia.org/wiki/" + article.replace(" ", "_")}
     return row
-CATALOGUE = [b("song", "Q7", "Black Cow", "Black Cow (song)"), b("song", "Q9", "Peg", "Peg (song)"),
+CATALOGUE = [b("song", "Q11", "Josie"), b("song", "Q7", "Black Cow", "Black Cow (song)"), b("song", "Q9", "Peg", "Peg (song)"),
              b("album", "Q8", "Aja", "Aja (album)"), b("album", "Q300", "Gaucho", "Gaucho (album)")]
 class S:
     def post(s, url, data=None, headers=None, timeout=None):
@@ -57,6 +60,12 @@ class S:
         return R({"results": {"bindings": CATALOGUE}})
     def get(s, url, params=None, headers=None, timeout=None):
         p = params or {}
+        if "fr.wikipedia" in url:
+            asked.append("fr")
+            fr = ("Josie est une chanson du groupe Steely Dan, parue en 1977 sur l'album Aja, "
+                  "écrite par Walter Becker et Donald Fagen pendant les séances à Los Angeles. " * 3)
+            return R({"query": {"pages": [{"title": p["titles"], "extract": fr,
+                                            "revisions": [{"slots": {"main": {"content": ""}}}]}]}})
         if p.get("list") == "search":
             asked.append("album songs" if "P361" in p["srsearch"] else "search")
             return R({"query": {"search": []}})
@@ -71,13 +80,20 @@ class S:
             out = [{"title": t, "extract": INTROS.get(t, "")} for t in p["titles"].split("|")]
             return R({"query": {"pages": out}})
         return R({})
+import translate as trm
+paid = []
+def fake_translate(self, paras, lang):
+    paid.append(lang)
+    return ['"Josie" is a song by Steely Dan from their 1977 album Aja, written by Walter Becker and Donald '
+            'Fagen during the sessions in Los Angeles, and released as a single the following year.' * 2]
+trm.Translator.translate = fake_translate
 lib = ab.load_json(__import__("ids").LIBRARY)["albums"]
-titles.run(lib, S(), say=lambda s: None)
+titles.run(lib, S(), say=lambda s: None, deepl_key="key:fx")
 aja = titles.merged("Steely Dan - Aja", ab.load_json(tn.CACHE / "albums" / f"{ab.safe_name('Steely Dan - Aja')}.json"))
 gau = titles.merged("Steely Dan - Gaucho", None)
 untouched = ab.load_json(tn.CACHE / "albums" / f"{ab.safe_name('Steely Dan - Aja')}.json")
 n = titles.report(lib, root)
-print(json.dumps({"asked": asked, "aja": aja["tracks"], "gaucho": (gau or {}).get("tracks"), "untouched": untouched["tracks"]["0"],
+print(json.dumps({"paid": paid, "asked": asked, "aja": aja["tracks"], "gaucho": (gau or {}).get("tracks"), "untouched": untouched["tracks"]["0"],
                   "report": (root / titles.REPORT).read_text(), "counts": n,
                   "saved": ab.load_json(titles.SAVED / f"{ab.safe_name('Steely Dan - Aja')}.json")["tracks"]}))
 '''
@@ -122,13 +138,25 @@ class TitleSearch(unittest.TestCase):
     def test_saved_data_untouched(self):
         self.assertEqual(self.r["untouched"]["source"], "last.fm")
 
+    def test_translated_when_no_english(self):
+        """Josie has only a French article: translated, credited, the checks applied."""
+        t = self.r["saved"]["6"]
+        self.assertEqual(t["source"], "wikipedia (fr, translated)")
+        self.assertIn("is a song by Steely Dan", t["paras"][0])
+        self.assertIn("Machine-translated", t["paras"][-1])
+        self.assertIn('Steely Dan - Aja: "Josie" (title search, wikipedia (fr, translated))', self.r["report"])
+
+    def test_english_never_replaced_by_translation(self):
+        """Only Josie was sent to DeepL: Black Cow had an English article."""
+        self.assertEqual(self.r["paid"], ["fr"])
+
     def test_few_requests(self):
         """One Wikidata query for the artist, not a search a track; the
         articles' openings in one request."""
         self.assertEqual(self.r["asked"].count("sparql"), 1)
         self.assertEqual(self.r["asked"].count("search"), 0)
         self.assertEqual(self.r["asked"].count("album songs"), 1)    # only Gaucho, found by title
-        self.assertEqual(self.r["asked"].count("extracts"), 1)
+        self.assertEqual(self.r["asked"].count("extracts"), 1)          # English openings, one request
 
     def test_report(self):
         rep = self.r["report"]

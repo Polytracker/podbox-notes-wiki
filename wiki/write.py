@@ -9,6 +9,7 @@
   the middle of its cover.
 - /Notes/.notes-wiki, empty, switches the viewer to scraper mode.
 """
+import hashlib
 import io
 
 from PIL import Image, ImageOps
@@ -46,15 +47,35 @@ class Writer:
         self.counts = {"written": 0, "same": 0, "kept": 0}
         self.kept = []
 
+    def _stamp(self, path):
+        try:
+            st = path.stat()
+        except OSError:
+            return None
+        return [st.st_size, st.st_mtime_ns]
+
     def put(self, place, ext, data):
+        """Writes a page or banner unless it is unchanged or someone else's.
+        An unchanged one is known without reading it back: its text is what
+        this script last wrote (the saved hash) and the file on the iPod is
+        still the size and date it had then. Anything else -- a file edited,
+        replaced or gone -- gets the full check (write_if_ours), so a page
+        you edit is still kept."""
         path = self.dir / f"{place}{ext}"
         meta = self.state.setdefault(f"{place}{ext}", {})
+        new = hashlib.sha1(data).hexdigest()
+        stamps = meta.setdefault("on", {})
+        here = str(self.dir)
+        if meta.get("sha1") == new and stamps.get(here) and stamps[here] == self._stamp(path):
+            self.counts["same"] += 1
+            return "same"
         if self.dry:
-            res = "same" if path.exists() and ab.sha1(path) == __import__("hashlib").sha1(data).hexdigest() \
-                else "written"
+            res = "same" if path.exists() and ab.sha1(path) == new else "written"
         else:
             path.parent.mkdir(parents=True, exist_ok=True)
             res = ab.write_if_ours(path, data, meta, "sha1")
+            if res != "kept":
+                stamps[here] = self._stamp(path)
         self.counts[res] += 1
         if res == "kept":
             self.kept.append(f"{place}{ext}")

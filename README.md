@@ -72,7 +72,10 @@ photo's.
 **Track notes** come from each song's Wikipedia article. Where the album's
 Wikidata entry doesn't lead to one, the song is looked for by its title and
 the album's artist (songs only, never an album of the same name), and its
-article must pass the same checks; Last.fm is only asked after that. Every
+article must pass the same checks; with a DeepL key, a song with no usable
+English article then tries its article in the artist's language, else in ten
+others, translated (never in place of an English one); Last.fm is only asked
+after that. Every
 track found that way, and every Last.fm write-up left with the reason, is
 listed in `Tracks by title.txt` after each run.
 
