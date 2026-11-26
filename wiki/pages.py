@@ -18,6 +18,8 @@ from . import md
 from . import ab
 from . import graph
 from . import show
+from . import full
+from . import lookups
 import credits as cr
 import ids
 import translate as tr
@@ -38,7 +40,9 @@ class Page:
 
     def text(self):
         out = "\n".join(self.lines).strip("\n") + "\n"
-        return re.sub(r"\n{3,}", "\n\n", out)
+        out = re.sub(r"\n{3,}", "\n\n", out)
+        # a heading sits straight on what follows it, on every page alike (Joe, 26 Nov)
+        return re.sub(r"^(## [^\n]*)\n\n(?=[^\n#])", r"\1\n", out, flags=re.M)
 
 
 # ---------------------------------------------------------------- links in running text
@@ -83,6 +87,7 @@ class Library:
         self.people = people        # root -> lookups.person()'s record
         self.discs = discs          # album artist tag -> lookups.discographies() list
         self.folders = folders      # folder -> liner_notes.py's saved tags
+        self.full_album = self.full_bio = False   # point 12: Basic unless the settings say Full
         names = {}
         for tag, place in w.artist_page.items():
             names[tag] = place
@@ -158,6 +163,39 @@ def body(lib, page, text):
     return source
 
 
+FULL_ROOM = PAGE_MAX - 6 * 1024     # left for the facts, strip, Key People and the track list
+
+
+def full_body(lib, page, notes, secs, article):
+    """Full: the introduction from the saved notes, then the article's chosen
+    sections, each under its own heading, the review scores after Critical
+    reception. Returns the source line."""
+    intro, scores, lead = [], "", True
+    for line in (notes or "").split("\n"):
+        line = tr.plain(line).strip()
+        if line.startswith("# "):
+            t = line[2:]
+            if " · " in t and re.search(r"\d", t) and not re.search(r"Wikipedia|Last\.fm|CC BY", t):
+                scores = t
+            lead = False                       # past the introduction: the section replaces the rest
+            continue
+        if line and lead:
+            intro.append(line)
+    room = FULL_ROOM - sum(len(x.encode("utf-8")) + 2 for x in intro)
+    for x in intro:
+        page.lines += [lib.linker.line(x, page), ""]
+    for head, paras in full.fit(secs, room):
+        page.lines += ["", f"## {md.text(head)}", ""]
+        for x in paras:
+            page.lines += [lib.linker.line(x, page), ""]
+        if head == "Critical reception" and scores:
+            page.lines += [md.note(md.text(scores)), ""]
+            scores = ""
+    if scores:
+        page.lines += [md.note(md.text(scores)), ""]
+    return full.credit(article)
+
+
 # ---------------------------------------------------------------- the album's pages
 def album_facts(lib, k):
     """artist · year · label · tracks · length, the artist a link (point 3)."""
@@ -168,7 +206,8 @@ def album_facts(lib, k):
     parts = [md.link(a["artist"], lib.w.artist_page.get(a["artist"])),
              md.text(lib.year(k)), md.text(seen.get("label") or meta.get("label") or ""),
              f"{n} track{'s' if n != 1 else ''}",
-             f"{meta['minutes']} min" if meta.get("minutes") else ""]
+             f"{meta['minutes']} min" if meta.get("minutes") else "",
+             md.text(full.chart_line(full.album_article(meta)))]
     return " · ".join(p for p in parts if p)
 
 
@@ -184,7 +223,13 @@ def track_notes(lib, k):
 def album_page(lib, k):
     p = Page(lib.album_place(k), "album", k)
     p.lines += [md.note(album_facts(lib, k)), ""]
-    source = body(lib, p, (lib.notes.get(k) or {}).get("notes"))
+    meta = lib.notes.get(k) or {}
+    article = full.album_article(meta) if lib.full_album else ""
+    secs = full.album_full(article) if article else []
+    if secs:
+        source = full_body(lib, p, meta.get("notes"), secs, article)
+    else:
+        source = body(lib, p, meta.get("notes"))
     key = lib.w.key.get(k) or []
     if key:
         p.lines += ["", "## Key People", ""]
@@ -194,7 +239,7 @@ def album_page(lib, k):
         p.lines.append("")
     with_notes = sorted({lib.lib[k]["tracks"][i][1] for i in track_notes(lib, k)})
     opts = ("|group=disc" if lib.multi_disc(k) else "") + \
-        ("|notes=" + ",".join(map(str, with_notes)) if with_notes else "")
+        ("|notes=" + ",".join(map(str, with_notes)) if with_notes else "") + "|show=plays"
     p.lines += ["", "## Tracks", "{{tracks%s}}" % opts, ""]
     if source:
         p.lines.append(md.note(md.text(source)))
@@ -274,12 +319,19 @@ def other_appearances_page(lib, k, people):
     return p
 
 
+def status_line(n):
+    """The Credits page's line about Other Appearances, short (Joe, 26 Nov)."""
+    if n == 0:
+        return "No one here appears elsewhere"
+    return "1 person appears elsewhere" if n == 1 else f"{n} people appear elsewhere"
+
+
 def credits_page(lib, k, people):
     rec, a = lib.records.get(k) or {}, lib.lib[k]
     chosen = lib.g.chosen.get(k) or {}
     p = Page(lib.album_place(k) + " - Credits", "credits", k)
     p.lines += md.front(f"{a['artist']} - {a['album']}")
-    status = cr.status_line(len(people))
+    status = status_line(len(people))
     if people:
         status = md.link(status, lib.album_place(k) + " - Other Appearances")
     p.lines.append(md.small(status if people else md.dim(md.text(status))))
@@ -326,7 +378,7 @@ def tracks_pages(lib, k):
         if source:
             lines.append(md.note(md.text(source)))
         sections.append((disc, "\n".join(lines).rstrip("\n") + "\n"))
-    head = "\n".join(md.front(f"{a['artist']} - {a['album']}") + ["{{contents|style=inline}}", ""])
+    head = "\n".join(md.front(f"{a['artist']} - {a['album']}") + [""])
     parts, cur, size = [], [], len(head)
     for disc, s in sections:
         n = len(s.encode("utf-8")) + 16
@@ -342,7 +394,7 @@ def tracks_pages(lib, k):
     for n, part in enumerate(parts[:TRACK_PARTS], 1):
         name = " - Tracks" if len(parts) == 1 else f" - Tracks {n}"
         p = Page(lib.album_place(k) + name, "tracks", k)
-        p.lines.append(head)
+        p.lines += head.split("\n")
         disc_now = None
         for disc, s in part:
             if multi and disc != disc_now:
@@ -429,6 +481,12 @@ def artist_page(lib, tag):
         for para in tr.plain(meta["bio"]).split("\n"):
             if para.strip():
                 p.lines += [lib.linker.line(para.strip(), p), ""]
+    article = full.bio_article(meta) if lib.full_bio else ""
+    secs = full.fit(full.bio_full(article), FULL_ROOM - 4 * 1024) if article else []
+    for head, paras in secs:
+        p.lines += ["", f"## {md.text(head)}", ""]
+        for x in paras:
+            p.lines += [lib.linker.line(x, p), ""]
     members = member_lines(lib, tag)
     if members:
         p.lines += ["## Members", ""] + members + [""]
@@ -465,7 +523,10 @@ def artist_page(lib, tag):
             role = "; ".join(roles_on(lib, r, k) for r in roots if k in lib.g.appear.get(r, {}))
             p.lines.append(album_line(lib, k, role))
         p.lines.append("")
-    if meta.get("bio") and meta.get("bio_source") != "facts":
+    p.photo_credit = lookups.photo_credit(meta)
+    if secs:
+        p.source = full.credit(article)
+    elif meta.get("bio") and meta.get("bio_source") != "facts":
         p.source = tr.credit(meta.get("bio_source") or "", meta.get("bio_lang"), meta.get("bio_title"),
                              date=meta.get("bio_date") or meta.get("fetched"))[2:]
     return p
@@ -494,6 +555,7 @@ def person_page(lib, root):
                 p.lines += [lib.linker.line(para.strip(), p), ""]
         p.source = tr.credit(meta.get("bio_source") or "", meta.get("bio_lang"), meta.get("bio_title"),
                              date=meta.get("bio_date") or meta.get("fetched"))[2:]
+    p.photo_credit = lookups.photo_credit(meta)
     if worked:
         p.lines += ["## Worked On", ""]
         p.lines += [album_line(lib, k, roles_on(lib, root, k)) for k in worked] + [""]
@@ -523,6 +585,44 @@ def mentioned_in(pages):
         source = getattr(p, "source", "")
         if source:
             p.lines.append(md.note(md.text(source)))
+        photo = getattr(p, "photo_credit", "")
+        if photo:                                   # credits always at the foot (Joe, 26 Nov)
+            p.lines.append(md.note(md.text(photo)))
+
+
+STRIP_DOT = " *·* "
+
+
+def strip(lib, k, here, tracks, credits):
+    """The album's pages as links in small capitals, under each page's title,
+    in iPod Liner Notes' order: BIO · ALBUM · TRACKS · CREDITS (TRACKS 1,
+    2… when split), only those that exist, the page it's on in plain white
+    and not a link (Joe, 26 Nov). Other Appearances isn't in it: it follows
+    on from Credits."""
+    bio = lib.w.artist_page.get(lib.lib[k]["artist"])
+    parts = []
+    if bio and md.place_ok(bio):
+        parts.append(("BIO", bio))
+    parts.append(("ALBUM", lib.album_place(k)))
+    for t in tracks:
+        parts.append((t.place.rsplit(" - ", 1)[-1].upper(), t.place))
+    if credits:
+        parts.append(("CREDITS", credits.place))
+    if len(parts) < 2:
+        return ""
+    return md.small(STRIP_DOT.join(name if place == here else md.link(name, place) for name, place in parts))
+
+
+def add_strip(page, line):
+    """The strip as the page's first line, right under its title. On an
+    album page the facts line follows with no gap; on the others, after
+    their front matter, a blank line."""
+    if not line:
+        return
+    if page.lines[:1] == ["---"]:
+        page.lines[3:3] = [line, ""]
+    else:
+        page.lines[0:0] = [line]
 
 
 def all_pages(lib):
@@ -533,6 +633,7 @@ def all_pages(lib):
         a.title = lib.title(k)
         pages.append(a)
         people = appearances(lib, k)
+        c = o = None
         if lib.g.chosen.get(k):
             c = credits_page(lib, k, people)
             c.title = f"{lib.title(k)} - Credits"
@@ -541,9 +642,14 @@ def all_pages(lib):
                 o = other_appearances_page(lib, k, people)
                 o.title = f"{lib.title(k)} - Other Appearances"
                 pages.append(o)
-        for t in tracks_pages(lib, k):
+        ts = tracks_pages(lib, k)
+        for t in ts:
             t.title = f"{lib.title(k)} - {t.place.rsplit(' - ', 1)[-1]}"
             pages.append(t)
+        add_strip(a, strip(lib, k, a.place, ts, c))
+        for other in [c, o] + ts:
+            if other is not None:
+                add_strip(other, strip(lib, k, other.place, ts, c))
     for tag in sorted(set(lib.canon.values())):
         a = artist_page(lib, tag)
         a.title = tag

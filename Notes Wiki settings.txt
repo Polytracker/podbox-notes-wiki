@@ -26,6 +26,17 @@ notes recheck days = 365
 # yes or no: the pictures at the top of the pages. no writes the text only.
 banners = yes
 
+# basic or full: how much of each album's Wikipedia article its page has.
+# basic: the introduction, the first paragraph of the critical reception and
+# the review scores. full adds the article's Background, Recording,
+# Composition, Title and artwork, the whole Critical reception and Legacy,
+# each under its own heading (a very long page has its longest part cut).
+album pages = basic
+
+# basic or full: the same for artists' Bio pages. full adds Early life,
+# Musical style and Legacy to the introduction.
+bio pages = basic
+
 # Your Discogs personal token, an extra source. Leave empty to skip Discogs.
 discogs token =
 

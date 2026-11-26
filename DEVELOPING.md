@@ -11,8 +11,10 @@ For someone changing the program. `README.md` is for someone running it.
 | `wiki/md.py` | The Markdown the viewer reads, and its file names |
 | `wiki/graph.py` | Who is credited where: the middle of `credits.py`'s `main()`, kept as data |
 | `wiki/people.py` | Key people, who gets a page, and each page's file |
-| `wiki/lookups.py` | Studio albums (Wikidata for everyone in one query, then MusicBrainz, then Discogs), and key people's bios many at a time: Wikidata by MusicBrainz ID (a query for hundreds), Wikipedia's openings 20 at a time, Last.fm and Discogs by ID for the rest, pictures from Wikimedia Commons |
-| `wiki/pages.py` | The pages |
+| `wiki/lookups.py` | Studio albums (Wikidata for everyone in one query, then MusicBrainz, then Discogs), and key people's bios many at a time: Wikidata by MusicBrainz ID (a query for hundreds), Wikipedia's openings 20 at a time, Last.fm and Discogs by ID for the rest; key people's photos, by ID, from Wikimedia Commons, then Discogs (`photo()`, its source kept for the credit) |
+| `wiki/titles.py` | Track write-ups found by title (and an album's Wikidata item by title) where `track_notes.py`'s album entry missed them; saved apart and merged into the pages, never into the copied scripts' saved data |
+| `wiki/full.py` | The articles behind the album and Bio pages, saved whole: the Full sections (`album pages`, `bio pages`), the page trimmed to fit, and the chart line read from `{{Album chart}}` and `{{Certification Table Entry}}` |
+| `wiki/pages.py` | The pages, the strip of an album's pages, and the credits at each page's foot |
 | `wiki/write.py` | Banners, and writing `/Notes` |
 | `wiki/show.py` | How the run looks: the banner, stage headings, progress bars, the spinner and colours (plain lines when the output goes to a file; `NO_COLOR=1` turns colour off) |
 
@@ -23,19 +25,30 @@ taken by copying the file again. Anything this project needs goes in
 
 ## The run
 
-1. The copied scripts, as ipod-liner-notes runs them: `ids.py`,
-   `artist_bios.py`, `liner_notes.py`, `track_notes.py`, `credits.py`.
-   Their own files go into `%APPDATA%\RockboxArtistArt\notes wiki\liner
-   files`, never onto the iPod; what matters is what they save.
-2. `graph.build()` reads the saved releases and works out each album's
-   credits and who is who.
-3. Key people (`people.key_people()`), and `lookups.people()` for them all.
-4. `people.assign()`: who has a page, and where.
-5. `lookups.discographies()`: studio albums, Wikidata first, then MusicBrainz, then Discogs.
-6. `pages.all_pages()`, then `Writer` puts each page and banner; a key person's picture
-   (`lookups.photo()`) is fetched only for those who get a page.
+1. `ids.py`, then the other copied scripts as ipod-liner-notes runs them:
+   `artist_bios.py`, `liner_notes.py`, `credits.py` one after another (they
+   ask MusicBrainz, one request a second in all), with `track_notes.py`
+   alongside as a process of its own (Wikidata, Wikipedia, Last.fm only; its
+   output in `Track notes log.txt`). Their own files go into
+   `%APPDATA%\RockboxArtistArt\notes wiki\liner files`, never onto the iPod;
+   what matters is what they save.
+2. In a background thread, Wikidata and Wikipedia only, one request at a time:
+   `titles.run()` (track write-ups found by title: all the artists' songs in a
+   Wikidata query per 50 artists) and `full.fetch()` (the albums' articles,
+   and the artists' when `bio pages = full`).
+3. Meanwhile: `graph.build()` reads the saved releases and works out each
+   album's credits and who is who; key people (`people.key_people()`) and
+   `lookups.people()` for them all; `people.assign()`, who has a page and where;
+   `lookups.discographies()`, studio albums; and `lookups.photo()` for each key
+   person who gets a page (Wikimedia Commons, then Discogs), before the pages,
+   so a page can credit its photo.
+4. The background thread is waited for, then `pages.all_pages()`, and `Writer`
+   puts each page and banner. A banner is cut again only when the picture it
+   comes from changed (judged by its files' names, sizes and dates, kept in
+   `written.json`) or the banner is gone; raise `BANNER_VERSION` when
+   `write.banner()` changes. `titles.report()` writes `Tracks by title.txt`.
 
-`--offline` skips step 1 and every request in steps 2 to 5.
+`--offline` skips steps 1 and 2 and every request in step 3.
 
 ## The contract with the viewer
 
@@ -72,8 +85,13 @@ python -m pytest -q tests liner/tests
 ```
 
 `tests/fixture.py` writes a small saved library in a temporary folder;
-`tests/test_wiki.py` writes the wiki from it and checks the pages. No
-network. Add a test for any change to what's written onto the iPod.
+`tests/test_wiki.py` writes the wiki from it and checks the pages;
+`tests/test_titles.py` and `tests/test_photos.py` stand in for Wikidata,
+Wikipedia and the photo sites. No network. Add a test for any change to
+what's written onto the iPod.
+
+Run the tests in a copy of the repository without `Notes Wiki keys.txt`:
+nothing in them should touch it, and on 26 Nov one did (now fixed).
 
 To see the pages on the simulator: `tools/sim_wiki.py <simdisk> <out>`,
 then copy `<out>/Notes` onto the simulator's disk.

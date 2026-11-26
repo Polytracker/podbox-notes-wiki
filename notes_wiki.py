@@ -31,7 +31,7 @@ import time
 from pathlib import Path
 
 import wiki                                    # noqa: F401  (liner/ on the path, settings file)
-from wiki import ab, graph, lookups, pages, people, show
+from wiki import ab, full, graph, lookups, pages, people, show, titles
 from wiki.write import Writer, banner
 import credits as cr
 import ids
@@ -50,22 +50,52 @@ def settings():
     return conf, Path(drive + "\\"), Path(music)
 
 
+TRACK_LOG = Path(__file__).resolve().parent / "Track notes log.txt"
+
+
 def run_lookups(music, args, conf):
-    """The copied scripts, in ipod-liner-notes' order, their files kept on this PC."""
+    """The copied scripts, in ipod-liner-notes' order, their files kept on this
+    PC. track_notes.py asks only Wikidata, Wikipedia and Last.fm, so once the
+    albums are identified it runs as a process of its own, alongside the three
+    that ask MusicBrainz and Discogs (MusicBrainz allows one request a second
+    in all, so those stay one after another). Its output goes to
+    TRACK_LOG; the last lines are shown when it's done."""
+    import subprocess
     STAGING.mkdir(parents=True, exist_ok=True)
     common = [str(music), "--ipod", str(STAGING)]
-    steps = [("Identifying the albums", ids.main, [str(music)]),
-             ("Artists' bios and photos", ab.main, common),
-             ("Album notes", ln.main, common),
-             ("Track notes", tn.main, common),
-             ("Credits", cr.main, common)]
-    for n, (title, main, argv) in enumerate(steps, 1):
+    stage = show.Stage("Identifying the albums (by ids.py, from ipod-liner-notes)")
+    if ids.main([str(music)]):
+        show.error("Identifying the albums stopped. Fix what it says and run again.")
+        return False
+    stage.done()
+    root = Path(__file__).resolve().parent
+    code = (f"import sys; sys.path.insert(0, {str(root)!r}); import wiki; import track_notes as t; "
+            "sys.exit(t.main(sys.argv[1:]) or 0)")
+    log = open(TRACK_LOG, "w", encoding="utf-8")
+    tracks = subprocess.Popen([sys.executable, "-c", code] + common, cwd=str(root), stdout=log,
+                              stderr=subprocess.STDOUT, env={**os.environ, "PYTHONIOENCODING": "utf-8"})
+    show.info(f"Track notes are being looked up alongside, by track_notes.py (its output: {TRACK_LOG.name})")
+    steps = [("Artists' bios and photos", ab.main), ("Album notes", ln.main), ("Credits", cr.main)]
+    ok = True
+    for n, (title, main) in enumerate(steps, 1):
         stage = show.Stage(f"{title} ({n} of {len(steps)}, by the scripts from ipod-liner-notes)")
-        if main(argv):
+        if main(common):
             show.error(f"{title} stopped. Fix what it says and run again.")
-            return False
+            ok = False
+            break
         stage.done()
-    return True
+    stage = show.Stage("Track notes (by track_notes.py, alongside)")
+    with show.Spinner("Waiting for it to finish"):
+        code = tracks.wait()
+    log.close()
+    tail = [l for l in TRACK_LOG.read_text(encoding="utf-8", errors="replace").splitlines() if l.strip()][-3:]
+    for line in tail:
+        show.info(line.strip())
+    if code:
+        show.error(f"Track notes stopped (see {TRACK_LOG.name}). Fix what it says and run again.")
+        return False
+    stage.done()
+    return ok
 
 
 def bio_record(tag, folder):
@@ -83,6 +113,27 @@ def bio_record(tag, folder):
         if meta:
             return meta, ab.CACHE / f"{name}.jpg"
     return None, None
+
+
+BANNER_VERSION = 1      # raise when banner() changes, so every banner is cut again
+
+
+def banner_source(folders, picture=None):
+    """What a banner is cut from, as names, sizes and dates only, so an unchanged
+    picture is known without opening it: the picture's file, or an album's
+    cover files (cover, folder, front…), else its first audio file (embedded art)."""
+    def mark(f):
+        st = f.stat()
+        return f"{f.name}:{st.st_size}:{st.st_mtime_ns}"
+    if picture is not None:
+        return f"{picture}|{mark(picture)}"
+    files = sorted((f for d in folders for f in d.iterdir()), key=lambda f: str(f))
+    covers = [f for f in files if f.suffix.lower() in (".jpg", ".jpeg", ".png")
+              and f.stem.lower().startswith(ab.COVER_NAMES)]
+    if covers:
+        return "|".join(f"{f.parent.name}/{mark(f)}" for f in covers)
+    audio = [f for f in files if f.suffix.lower() in (".mp3", ".flac", ".m4a", ".ogg", ".opus")]
+    return f"embedded|{mark(audio[0])}" if audio else ""
 
 
 def lastfm_key(conf):
@@ -133,6 +184,41 @@ def main(argv=None):
     if online and not token:
         show.info("No Discogs token: Discogs is skipped (see the settings file)")
 
+    # -- what the pages are written from
+    notes, tracks, bios, photos, discs = {}, {}, {}, {}, {}
+    for k, a in lib.items():
+        name = ab.safe_name(k)
+        if name:
+            notes[k] = ab.load_json(ln.CACHE / f"{name}.json")
+        if a["artist"] not in bios:
+            bios[a["artist"]], photos[a["artist"]] = bio_record(a["artist"], a.get("folder"))
+    # the articles the Full sections and the chart line are read from (point 12)
+    full_album, full_bio = full.setting(conf, "album pages") == "full", full.setting(conf, "bio pages") == "full"
+    articles = [full.album_article(m) for m in notes.values()]
+    if full_bio:
+        articles += [full.bio_article(m) for m in bios.values()]
+    articles = [t for t in articles if t]
+
+    session = __import__("requests").Session()
+    background = None
+    if online:
+        # In the background, Wikidata and Wikipedia only, one request at a time:
+        # track write-ups found by title, then the albums' articles. They run
+        # alongside the MusicBrainz and Discogs work that follows.
+        import threading
+        background = {"error": None}
+
+        def wiki_work():
+            s2 = __import__("requests").Session()
+            try:
+                titles.run(lib, s2, say=lambda s: None, quiet=True)
+                full.fetch(articles, s2)
+            except Exception as e:                          # reported, never fatal
+                background["error"] = e
+        background["thread"] = threading.Thread(target=wiki_work, daemon=True)
+        background["thread"].start()
+        show.info("Track write-ups by title and the albums' Wikipedia articles: looked up in the background")
+
     stage = show.Stage(f"Who's who, across {len(lib)} albums")
     with show.Spinner("Reading the credits and joining people across MusicBrainz and Discogs"):
         g = graph.build(lib, records, mb, dc, progress=lambda *a, **k: None)
@@ -142,7 +228,6 @@ def main(argv=None):
     per_album, keyed, _ = people.key_people(g, lib)
     lib_roots = people.library_artist_roots(g, lib)
     candidates = [r for r in sorted(keyed, key=str) if r not in lib_roots]
-    session = __import__("requests").Session()
     look = argparse.Namespace(lastfm_key=key, discogs_token=token)
     stage = show.Stage(f"Key people: {len(candidates):,}")
     wanted = [(r, g.name.get(r, ""), graph.mb_id(g, r), graph.dc_id(g, r)) for r in candidates]
@@ -157,15 +242,6 @@ def main(argv=None):
     stage.done(f"{with_page:,} get a page; bios: " +
                ", ".join(f"{n:,} {src}" for src, n in sorted(sources.items(), key=lambda x: -x[1])) or "none")
 
-    # -- what the pages are written from
-    notes, tracks, bios, photos, discs = {}, {}, {}, {}, {}
-    for k, a in lib.items():
-        name = ab.safe_name(k)
-        if name:
-            notes[k] = ab.load_json(ln.CACHE / f"{name}.json")
-            tracks[k] = ab.load_json(tn.CACHE / "albums" / f"{name}.json")
-        if a["artist"] not in bios:
-            bios[a["artist"]], photos[a["artist"]] = bio_record(a["artist"], a.get("folder"))
     artists = {}
     for tag in w.artist_page:
         roots = [r for r, t in w.lib_root.items() if t == tag]
@@ -179,11 +255,41 @@ def main(argv=None):
     stage.done(f"{sum(1 for v in discs.values() if v)} artists have a list; "
                f"the rest show the albums you own")
 
+    # -- key people's photos, before the pages so each page can credit its photo (point 5)
+    person_meta = {r: m for r, m in found.items() if m}
+    if online and not args.no_banners:
+        keys = lookups.photo_keys(conf)
+        want = [r for r in w.root_page if r not in w.lib_root and person_meta.get(r)]
+        stage = show.Stage(f"Key people's photos: {len(want):,} pages (Wikimedia Commons, then Discogs, by ID)")
+        bar = show.Bar("Photos", len(want))
+        got = {}
+        for r in want:
+            bar.update(note=g.name.get(r, ""))
+            jpg = lookups.photo(person_meta[r], session, keys)
+            if jpg:
+                src = person_meta[r].get("photo_source") or "Wikimedia Commons"
+                got[src] = got.get(src, 0) + 1
+        bar.close()
+        stage.done(", ".join(f"{n:,} {src}" for src, n in sorted(got.items(), key=lambda x: -x[1])) or "none")
+
+    stage = show.Stage(f"Track write-ups by title, and Wikipedia articles: {len(articles)} "
+                       f"(album pages {'full' if full_album else 'basic'}, bio pages {'full' if full_bio else 'basic'})")
+    if background:
+        with show.Spinner("Finishing the background lookups"):
+            background["thread"].join()
+        if background["error"]:
+            show.warn(f"the background lookups stopped: {background['error']} (the next run carries on)")
+    for k in lib:
+        name = ab.safe_name(k)
+        if name:
+            tracks[k] = titles.merged(k, ab.load_json(tn.CACHE / "albums" / f"{name}.json"))
+    stage.done(f"{sum(1 for t in articles if full.saved(t))} articles saved")
+
     stage = show.Stage("Making the pages")
     with show.Spinner("Linking names, credits and appearances"):
         folders = ab.load_json(ln.FOLDERS) or {}
-        person_meta = {r: m for r, m in found.items() if m}
         L = pages.Library(lib, records, g, w, notes, tracks, bios, person_meta, discs, folders)
+        L.full_album, L.full_bio = full_album, full_bio
         every = pages.all_pages(L)
     kinds = {}
     for p in every:
@@ -202,32 +308,43 @@ def main(argv=None):
         wr.put(p.place, ".md", p.text().encode("utf-8"))
         if args.no_banners:
             continue
-        pic, centre = None, False
+        get, key, centre = None, None, False
         if p.kind == "album":
-            a = lib[p.subject]
-            folder = Path(a.get("folder") or "")
+            folder = Path(lib[p.subject].get("folder") or "")
             if folder.is_dir():
                 try:
-                    pic = ab.album_cover([folder] + [d for d in folder.iterdir() if d.is_dir()])[0]
+                    folders = [folder] + [d for d in folder.iterdir() if d.is_dir()]
+                    key = banner_source(folders)
+                    get = lambda f=folders: ab.album_cover(f)[0]
                 except OSError:
-                    pic = None
+                    pass
             centre = True
         elif p.kind == "artist":
             jpg = photos.get(p.subject)
             if jpg and jpg.exists():
-                pic = jpg.read_bytes()
+                key, get = banner_source([], jpg), jpg.read_bytes
                 centre = (bios.get(p.subject) or {}).get("photo_source") == "album cover"
         elif p.kind == "person" and person_meta.get(p.subject):
-            jpg = lookups.photo(person_meta[p.subject], session) if online else \
-                lookups.saved_person(graph.mb_id(g, p.subject), graph.dc_id(g, p.subject))[1]
+            jpg = lookups.saved_person(graph.mb_id(g, p.subject), graph.dc_id(g, p.subject))[1]
             if jpg and Path(jpg).exists():
-                pic = Path(jpg).read_bytes()
-        if pic:
-            try:
-                wr.put(p.place, ".jpg", banner(pic, centre))
-                banners += 1
-            except Exception as e:
-                no_banner.append(f"{p.place}: {e}")
+                key, get = banner_source([], Path(jpg)), Path(jpg).read_bytes
+        if not get:
+            continue
+        key = f"{key}|{centre}|{BANNER_VERSION}" if key else None
+        meta = wr.state.get(f"{p.place}.jpg") or {}
+        if key and meta.get("from") == key and (wr.dir / f"{p.place}.jpg").exists():
+            wr.counts["same"] += 1                      # the same picture as last time: not cut again
+            banners += 1
+            continue
+        try:
+            pic = get()
+            if not pic:
+                continue
+            if wr.put(p.place, ".jpg", banner(pic, centre)) != "kept" and not args.dry_run and key:
+                wr.state[f"{p.place}.jpg"]["from"] = key
+            banners += 1
+        except Exception as e:
+            no_banner.append(f"{p.place}: {e}")
     bar.close(f"{len(every):,} pages, {banners:,} banners")
     wr.marker()
     wr.save()
@@ -241,6 +358,10 @@ def main(argv=None):
     if len(wr.kept) > 20:
         show.warn(f"and {len(wr.kept) - 20} more kept as you left them")
     stage.done(f"{c['written']:,} written or updated, {c['same']:,} unchanged, {c['kept']:,} kept as you left them")
+
+    filled, left = titles.report(lib, Path(__file__).resolve().parent)
+    show.info(f"Track write-ups found by title: {filled:,}; still from Last.fm: {left:,} "
+              f"(both listed in \"{titles.REPORT}\")")
 
     for names in getattr(w, "case_clashes", []):
         show.warn(f"{' and '.join(repr(n) for n in names)} are different artists to MusicBrainz, but the "

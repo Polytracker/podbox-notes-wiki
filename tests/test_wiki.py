@@ -15,6 +15,27 @@ from wiki import md, pages           # noqa: E402
 fixture.write(ROOT)
 import notes_wiki                    # noqa: E402
 
+# Gaucho's notes from its Wikipedia article, and the article saved (point 12)
+from wiki import ab as _ab, full as _full    # noqa: E402
+import liner_notes as _ln                    # noqa: E402
+_g = _ab.load_json(_ln.CACHE / f"{_ab.safe_name('Steely Dan - Gaucho')}.json")
+_g.update(source="wikipedia", notes="Gaucho is the seventh album by Steely Dan.\n# Critical reception\n"
+          "Critics were divided.\n# AllMusic 4/5 · Rolling Stone 3/5\n"
+          '# Excerpts from the Wikipedia article "Gaucho (album)", CC BY-SA 4.0')
+_ab.save_json(_ln.CACHE / f"{_ab.safe_name('Steely Dan - Gaucho')}.json", _g)
+_full.ARTICLES.mkdir(parents=True, exist_ok=True)
+_ab.save_json(_full.ARTICLES / "Gaucho (album).json", {"title": "Gaucho (album)", "fetched": "2026-11-26",
+    "text": "Gaucho is the seventh album by Steely Dan, the lead long enough to be counted here.\n"
+            "== Background ==\nAfter Aja the band moved to New York, where the sessions would last a year or more.\n"
+            "== Recording ==\nThe album took over a year to record, with dozens of session players, at great cost.\n"
+            "=== Wendy ===\nA tape of one song was erased by mistake by an assistant engineer at the studio.\n"
+            "== Release ==\nIt was released in November 1980 and sold a million copies in the first months.\n"
+            "== Critical reception ==\nCritics were divided on the album, some finding it too polished by half.\n"
+            "Later reviews were kinder, and it is now counted among the band's best records of the time.\n"
+            "== Track listing ==\nBabylon Sisters and the rest of the tracks, each listed one by one here.\n",
+    "wikitext": "{{Album chart|Billboard200|9|access-date=1}} {{Album chart|UK2|27}} {{Album chart|UK2|30}}"
+                "{{Certification Table Entry|region=United States|award=Platinum|relyear=1980}}"})
+
 OUT = ROOT / "out"
 notes_wiki.main(["--offline", "--out", str(OUT)])
 NOTES = OUT / "Notes"
@@ -51,8 +72,8 @@ class Pages(unittest.TestCase):
 
     def test_album_page(self):
         p = page("Albums/Steely Dan - Aja")
-        self.assertTrue(p.startswith("<small>*[Steely Dan](<People/Steely Dan>) · 1977 · ABC"))
-        self.assertIn("{{tracks|notes=2}}", p)
+        self.assertTrue(p.split("\n")[1].startswith("<small>*[Steely Dan](<People/Steely Dan>) · 1977 · ABC"))
+        self.assertIn("{{tracks|notes=2|show=plays}}", p)
         self.assertIn("## Key People", p)
         self.assertIn("[Gary Katz](<People/Gary Katz>) *Producer*", p)
         self.assertIn("John Smith *Mixing*", p)            # no page: plain
@@ -67,7 +88,7 @@ class Pages(unittest.TestCase):
     def test_credits_page(self):
         p = page("Albums/Steely Dan - Aja - Credits")
         self.assertTrue(p.startswith("---\nalbum: Steely Dan - Aja\n---\n"))
-        self.assertIn("[3 people appear elsewhere in your library](<Albums/Steely Dan - Aja - Other Appearances>)", p)
+        self.assertIn("[3 people appear elsewhere](<Albums/Steely Dan - Aja - Other Appearances>)", p)
         self.assertIn("[Steve Gadd](<People/Steve Gadd>) *Drums \\[2, 5\\]*", p)
 
     def test_band_plays_the_whole_album(self):
@@ -85,14 +106,55 @@ class Pages(unittest.TestCase):
 
     def test_tracks_page(self):
         p = page("Albums/Steely Dan - Aja - Tracks")
-        self.assertIn("{{contents|style=inline}}", p)
+        self.assertNotIn("{{contents", p)                  # no cut-short list at the top (point 8)
         self.assertIn("## 2. Aja\n", p)                    # the title as tagged
+
+    def test_chart_line(self):
+        """Always on: the highest UK and US places and certification (point 12)."""
+        p = page("Albums/Steely Dan - Gaucho")
+        self.assertIn("No. 27 UK · No. 9 US · Platinum US*</small>", p.split("\n")[1])
+        self.assertNotIn("## Background", p)                 # Basic by default
+        self.assertNotIn("No. ", page("Albums/Steely Dan - Aja").split("\n")[1])   # no article saved
+
+    def test_strip(self):
+        """BIO · ALBUM · TRACKS · CREDITS on an album's pages (points 9, 10, 17):
+        small capitals, the first line under the title of each, the page it's
+        on plain white (not a link, not dimmed), Other Appearances left out;
+        on the album page the facts line straight under it."""
+        d = " *·* "
+        bio, alb = "[BIO](<People/Steely Dan>)", "[ALBUM](<Albums/Steely Dan - Aja>)"
+        trk, cre = "[TRACKS](<Albums/Steely Dan - Aja - Tracks>)", "[CREDITS](<Albums/Steely Dan - Aja - Credits>)"
+        a = page("Albums/Steely Dan - Aja").split("\n")
+        self.assertEqual(a[0], f"<small>{bio}{d}ALBUM{d}{trk}{d}{cre}</small>")
+        self.assertTrue(a[1].startswith("<small>*[Steely Dan]"))           # the facts line, no gap
+        c = page("Albums/Steely Dan - Aja - Credits").split("\n")
+        self.assertEqual(c[3], f"<small>{bio}{d}{alb}{d}{trk}{d}CREDITS</small>")
+        t = page("Albums/Steely Dan - Aja - Tracks").split("\n")
+        self.assertEqual(t[3], f"<small>{bio}{d}{alb}{d}TRACKS{d}{cre}</small>")
+        o = page("Albums/Steely Dan - Aja - Other Appearances").split("\n")
+        self.assertEqual(o[3], f"<small>{bio}{d}{alb}{d}{trk}{d}{cre}</small>")
+        g = page("Albums/Steely Dan - Gaucho")              # no Tracks page: left out
+        self.assertIn(f"<small>[BIO](<People/Steely Dan>){d}ALBUM{d}[CREDITS]", g)
+        self.assertNotIn("[BIO]", page("People/Steely Dan"))   # Bio pages have no strip
+
+    def test_no_gap_under_headings(self):
+        """A heading sits straight on what follows it, as on the Tracks page."""
+        c = page("Albums/Steely Dan - Aja - Credits")
+        self.assertRegex(c, r"## Musicians\n\S")
+        self.assertRegex(page("Albums/Steely Dan - Aja"), r"## Key People\nWalter Becker")
+        self.assertRegex(page("People/Steely Dan"), r"## Members\n\S")
+
+    def test_credits_at_the_foot(self):
+        """The text's source, then the photo's, as the page's last lines."""
+        tail = page("People/Steely Dan").rstrip().split("\n")[-2:]
+        self.assertIn("Wikipedia", tail[0])
+        self.assertEqual(tail[1], "<small>*Photo from TheAudioDB*</small>")
 
     def test_bio_page(self):
         p = page("People/Steely Dan")
         self.assertIn("## Members", p)
         self.assertIn("Walter Becker *bass guitar, guitar, 1972–2017*", p)
-        self.assertIn("## Studio Albums\n\nCan't Buy a Thrill *1972*\n[Aja](<Albums/Steely Dan - Aja>) *1977*", p)
+        self.assertIn("## Studio Albums\nCan't Buy a Thrill *1972*\n[Aja](<Albums/Steely Dan - Aja>) *1977*", p)
         self.assertNotIn("## Albums", p)
 
     def test_key_people_pages(self):
@@ -308,15 +370,21 @@ class StudioAlbums(unittest.TestCase):
 
 class Keys(unittest.TestCase):
     def test_keys_file_wins(self):
+        """A key in the keys file wins over the settings file's. Written to a
+        file of its own, never the real keys file, which holds the user's keys."""
+        import tempfile
         import wiki
         from wiki import ab
-        wiki.KEYS.write_text("discogs token = abc\nlastfm key =\n", encoding="utf-8")
-        try:
-            conf = ab.settings()
-            self.assertEqual(conf["discogs token"], "abc")
-            self.assertEqual(conf.get("ipod drive"), "G:")       # the settings file still read
-        finally:
-            wiki.KEYS.unlink()
+        real = wiki.KEYS
+        with tempfile.TemporaryDirectory() as d:
+            wiki.KEYS = Path(d) / "keys.txt"
+            wiki.KEYS.write_text("discogs token = abc\nlastfm key =\n", encoding="utf-8")
+            try:
+                conf = ab.settings()
+                self.assertEqual(conf["discogs token"], "abc")
+                self.assertEqual(conf.get("ipod drive"), "G:")       # the settings file still read
+            finally:
+                wiki.KEYS = real
 
 
 class OnePerson(unittest.TestCase):
@@ -406,3 +474,63 @@ class Writing(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FullPages(unittest.TestCase):
+    """album pages = full: the article's chosen sections in its order, the
+    scores after Critical reception, Release and Track listing left out."""
+    @classmethod
+    def setUpClass(cls):
+        from wiki import full
+        keep = full.setting
+        full.setting = lambda conf, name: "full"
+        try:
+            notes_wiki.main(["--offline", "--out", str(ROOT / "full")])
+        finally:
+            full.setting = keep
+        cls.p = (ROOT / "full" / "Notes" / "Albums" / "Steely Dan - Gaucho.md").read_text(encoding="utf-8")
+
+    def test_sections(self):
+        p = self.p
+        heads = [l for l in p.split("\n") if l.startswith("## ")]
+        self.assertEqual(heads[:3], ["## Background", "## Recording", "## Critical reception"])
+        self.assertIn("A tape of one song was erased", p)       # Recording's subsection kept
+        self.assertNotIn("released in November 1980", p)
+        self.assertNotIn("Babylon Sisters and the rest", p)
+        self.assertIn("Later reviews were kinder", p)            # the whole section
+        self.assertLess(p.index("Later reviews were kinder"), p.index("AllMusic 4/5"))
+        self.assertIn("Gaucho is the seventh album by [Steely Dan](<People/Steely Dan>).", p)
+        self.assertTrue(p.rstrip().endswith('"Gaucho (album)", CC BY-SA 4.0, retrieved 26 Nov 2026*</small>'))
+
+    def test_fit(self):
+        from wiki import full
+        big = [("A", ["x" * 900] * 20), ("B", ["y" * 900] * 3)]
+        out = full.fit(big, 8000)
+        self.assertEqual([h for h, _ in out], ["A", "B"])      # nothing dropped, the long one cut
+        self.assertLess(len(out[0][1]), 20)
+        self.assertEqual(len(out[1][1]), 3)
+
+
+class BannerCache(unittest.TestCase):
+    """A banner is cut again only when its picture changed (or the banner is
+    gone): a second run opens no pictures at all."""
+    def test_second_run_cuts_nothing(self):
+        import os, time
+        cut = []
+        keep = notes_wiki.banner
+        notes_wiki.banner = lambda pic, centre: cut.append(centre) or keep(pic, centre)
+        try:
+            out = ROOT / "cache"
+            notes_wiki.main(["--offline", "--out", str(out)])
+            first = len(cut)
+            notes_wiki.main(["--offline", "--out", str(out)])
+            self.assertEqual(len(cut), first)               # nothing cut the second time
+            cover = ROOT / "Music" / "Steely Dan" / "Aja" / "cover.jpg"
+            t = time.time() + 5
+            os.utime(cover, (t, t))                          # the cover changed
+            (out / "Notes" / "People" / "Steely Dan.jpg").unlink()     # a banner gone
+            notes_wiki.main(["--offline", "--out", str(out)])
+            self.assertEqual(len(cut), first + 2)
+        finally:
+            notes_wiki.banner = keep
+        self.assertGreater(first, 0)

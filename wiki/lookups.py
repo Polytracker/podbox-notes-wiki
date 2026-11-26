@@ -379,6 +379,9 @@ def people(wanted, session, args, online=True, retry_days=30, refresh_days=365, 
             except ab.NET_ERRORS as e:
                 ab.problem(name, e)
         old = have.get(key)
+        for k in ("photo_source", "photo_tried"):          # what the photo ladder found is kept
+            if old and old.get(k):
+                new[k] = old[k]
         if old and enough_bio(old) and not enough_bio(new):
             new.update({k: old.get(k) for k in ab.BIO_FIELDS})      # a site being down costs nothing
         ab.save_json(PEOPLE / f"{person_key(mbid, dcid)}.json", new)
@@ -388,23 +391,105 @@ def people(wanted, session, args, online=True, retry_days=30, refresh_days=365, 
     return have
 
 
-def photo(meta, session):
-    """The person's Wikimedia Commons picture, saved beside their record; its
-    path, or None."""
-    mbid, dcid = meta.get("mbid"), meta.get("discogs")
-    _, jpg = saved_person(mbid, dcid)
-    if jpg.exists():
-        return jpg
+IMAGE_HEADS = (b"\xff\xd8\xff", b"\x89PN")
+PHOTO_RETRY_DAYS = 30
+PHOTO_SOURCES = ("Wikimedia Commons", "Discogs")
+
+
+def _image(data):
+    """The bytes when they're a picture Pillow can read: JPEG, PNG or WebP
+    (Commons now sends some pictures as WebP)."""
+    if not data:
+        return None
+    if data[:3] in IMAGE_HEADS or (data[:4] == b"RIFF" and data[8:12] == b"WEBP"):
+        return data
+    return None
+
+
+def _get(session, url, params=None, headers=None):
+    try:
+        r = session.get(url, params=params, headers={**ab.UA, **(headers or {})}, timeout=30)
+    except ab.NET_ERRORS:
+        return None
+    return r if r.ok else None
+
+
+def _commons(meta, session, keys):
     url = meta.get("image") or ""
     if not url.startswith("http"):
         return None
     try:
         r = ab.wiki_get(session, url.replace("http://", "https://"), {"width": 640})
-        data = r.content if r.ok and r.content[:3] in (b"\xff\xd8\xff", b"\x89PN") else None
     except ab.NET_ERRORS as e:
         ab.problem(meta.get("artist", ""), e)
-        data = None
-    if data:
-        ab.atomic_write(jpg, data)
+        return None
+    return _image(r.content) if r.ok else None
+
+
+def _discogs(meta, session, keys):
+    if not meta.get("discogs") or not keys.get("discogs token"):
+        return None
+    time.sleep(1.1)                                     # Discogs: 60 a minute with a token
+    r = _get(session, f"{ids.DISCOGS}artists/{meta['discogs']}",
+             headers={"Authorization": f"Discogs token={keys['discogs token']}"})
+    imgs = (r.json().get("images") or []) if r else []
+    pick = next((i for i in imgs if i.get("type") == "primary"), imgs[0] if imgs else None)
+    url = (pick or {}).get("uri")
+    got = _get(session, url, headers={"Authorization": f"Discogs token={keys['discogs token']}"}) if url else None
+    return _image(got.content) if got else None
+
+
+# The quickest sources only (Joe, 26 Nov): TheAudioDB (30 requests a minute)
+# and fanart.tv would add about 20 people for a quarter of an hour more
+LADDER = (("Wikimedia Commons", _commons), ("Discogs", _discogs))
+
+
+def photo_keys(conf):
+    """The keys the ladder uses: the Discogs token from the settings or keys file."""
+    return {"discogs token": (conf.get("discogs token") or "").strip()}
+
+
+def photo(meta, session, keys=None):
+    """A key person's picture, saved beside their record; its path, or None.
+    Asked of each source in turn, always by the person's own ID and never by
+    name (point 5, Joe 26 Nov): their Wikidata item's picture on Wikimedia
+    Commons, then Discogs by Discogs ID. Which gave it is kept in the record (for the page's credit line); a
+    person none had a picture for is asked again after PHOTO_RETRY_DAYS."""
+    mbid, dcid = meta.get("mbid"), meta.get("discogs")
+    rec_path = PEOPLE / f"{person_key(mbid, dcid)}.json"
+    _, jpg = saved_person(mbid, dcid)
+    if jpg.exists():
         return jpg
+    if session is None:
+        return None
+    tried = meta.get("photo_tried")
+    if tried and _age_days({"fetched": tried}) < PHOTO_RETRY_DAYS:
+        return None
+    keys = keys or {}
+    for name, ask in LADDER:
+        data = ask(meta, session, keys)
+        if data:
+            ab.atomic_write(jpg, data)
+            meta["photo_source"] = name
+            meta.pop("photo_tried", None)
+            ab.save_json(rec_path, meta)
+            return jpg
+    meta["photo_tried"] = time.strftime("%Y-%m-%d")
+    ab.save_json(rec_path, meta)
     return None
+
+
+def photo_credit(meta):
+    """The page's photo credit line, or ''."""
+    meta = meta or {}
+    src = meta.get("photo_source") or ""
+    if not src and "discogs" in meta and (meta.get("image") or "").startswith("http") \
+            and saved_person(meta.get("mbid"), meta.get("discogs"))[1].exists():
+        src = "Wikimedia Commons"               # a key person's photo saved before the ladder kept its source
+    if src in PHOTO_SOURCES:
+        return f"Photo from {src}"
+    low = src.lower()
+    for name in ("Last.fm", "fanart.tv", "TheAudioDB", "Deezer", "MusicBrainz", "Discogs"):
+        if name.lower().replace(".", "") in low.replace(".", ""):
+            return f"Photo from {name}"
+    return ""
