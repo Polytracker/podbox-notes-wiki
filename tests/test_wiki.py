@@ -129,6 +129,7 @@ class Pages(unittest.TestCase):
         self.assertTrue(a[1].startswith("<small>*[Steely Dan]"))           # the facts line, no gap
         c = page("Albums/Steely Dan - Aja - Credits").split("\n")
         self.assertEqual(c[3], f"<small>{bio}{d}{alb}{d}{trk}{d}CREDITS</small>")
+        self.assertTrue(c[4].startswith("<small>"))                     # its small lines, no gap
         t = page("Albums/Steely Dan - Aja - Tracks").split("\n")
         self.assertEqual(t[3], f"<small>{bio}{d}{alb}{d}TRACKS{d}{cre}</small>")
         o = page("Albums/Steely Dan - Aja - Other Appearances").split("\n")

@@ -614,15 +614,15 @@ def strip(lib, k, here, tracks, credits):
 
 
 def add_strip(page, line):
-    """The strip as the page's first line, right under its title. On an
-    album page the facts line follows with no gap; on the others, after
-    their front matter, a blank line."""
+    """The strip as the page's first line, right under its title. Small
+    lines under it -- the album page's facts line, the Credits page's
+    appearances and editions -- follow it with no gap; anything else, after
+    a blank line."""
     if not line:
         return
-    if page.lines[:1] == ["---"]:
-        page.lines[3:3] = [line, ""]
-    else:
-        page.lines[0:0] = [line]
+    at = 3 if page.lines[:1] == ["---"] else 0
+    nxt = page.lines[at] if at < len(page.lines) else ""
+    page.lines[at:at] = [line] if nxt.startswith("<small>") else [line, ""]
 
 
 def all_pages(lib):
